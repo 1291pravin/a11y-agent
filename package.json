@@ -1,0 +1,13 @@
+{
+  "name": "a11y-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Accessibility SDLC control plane: AQA (UsableNet) coverage + Cursor Background Agents for fixes",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "demo": "node server/index.mjs --demo",
+    "test": "node --test"
+  }
+}
