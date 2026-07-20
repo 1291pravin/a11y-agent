@@ -1,8 +1,9 @@
 // API handlers. All JSON in/out. Router in index.mjs calls handle(req, res, url).
 
 import { existsSync } from 'node:fs';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
-import { dispatchTask, demoScan, startRealScan } from './orchestrator.mjs';
+import { dispatchTask, demoScan, startRealScan, verifyMerge } from './orchestrator.mjs';
 import { buildIndex, mapCause } from './mapper.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
@@ -103,6 +104,39 @@ export async function handle(req, res, url) {
     return json(res, 201, task);
   }
 
+  // M4: GitHub pull_request webhook. Only merged closes matter; the signature
+  // is verified against the raw body bytes when GITHUB_WEBHOOK_SECRET is set.
+  if (method === 'POST' && path === '/api/webhooks/github') {
+    const raw = await readRawBody(req);
+    const secret = process.env.GITHUB_WEBHOOK_SECRET;
+    if (secret && !validSignature(raw, req.headers['x-hub-signature-256'], secret)) {
+      return json(res, 401, { error: 'invalid signature' });
+    }
+    let payload;
+    try { payload = JSON.parse(raw || '{}'); } catch { payload = {}; }
+    if (payload.action !== 'closed' || !payload.pull_request?.merged) {
+      return json(res, 202, { ok: true, ignored: true });
+    }
+    const num = String(payload.pull_request.number);
+    const repo = payload.repository?.full_name;
+    const s = getState();
+    const pr = s.prs.find((p) => String(p.num) === num && p.state === 'open'
+      && s.sites.find((x) => x.id === p.siteId)?.repo === repo);
+    if (!pr) return json(res, 202, { ok: true, ignored: true });
+    verifyMerge(pr).catch((err) => console.error('verifyMerge:', err.message));
+    return json(res, 202, { ok: true, verifying: true });
+  }
+
+  // M4: manual merge intake - the "Mark merged" button and offices without
+  // webhook access. Same verification path as the webhook.
+  if (method === 'POST' && (m = path.match(/^\/api\/prs\/([\w-]+)\/merged$/))) {
+    const pr = getState().prs.find((p) => String(p.num) === m[1]);
+    if (!pr) return json(res, 404, { error: 'PR not found' });
+    if (pr.state !== 'open') return json(res, 409, { error: `PR already ${pr.state}` });
+    verifyMerge(pr).catch((err) => console.error('verifyMerge:', err.message));
+    return json(res, 202, { ok: true, verifying: true });
+  }
+
   if (method === 'POST' && path === '/api/settings') {
     const body = await readBody(req);
     update((s) => {
@@ -189,13 +223,27 @@ function json(res, status, obj) {
 }
 
 function readBody(req) {
+  return readRawBody(req).then((data) => {
+    try { return data ? JSON.parse(data) : {}; }
+    catch { return {}; }
+  });
+}
+
+// Webhook signatures are computed over the raw body bytes, so it must be read
+// before any JSON parsing.
+function readRawBody(req) {
   return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (c) => { data += c; if (data.length > 1e6) req.destroy(); });
-    req.on('end', () => {
-      try { resolve(data ? JSON.parse(data) : {}); }
-      catch { resolve({}); }
-    });
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => { chunks.push(c); size += c.length; if (size > 1e6) req.destroy(); });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+
+function validSignature(raw, header, secret) {
+  const expected = `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
+  const a = Buffer.from(String(header || ''));
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }

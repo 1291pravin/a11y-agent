@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { handle as handleApi } from './routes.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
-import { bootstrapFleet, usesRealFleet, getState } from './store.mjs';
+import { bootstrapFleet, usesRealFleet, getState, update } from './store.mjs';
 import { hasFleetConfig } from './bootstrap.mjs';
 import { resumePolling } from './orchestrator.mjs';
 
@@ -76,6 +76,13 @@ async function start() {
     console.log(`  http://localhost:${PORT}`);
     console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode'}`);
     console.log(`  Cursor: ${cursor.isReal ? 'REAL' : 'demo mode'}`);
+    if (!process.env.GITHUB_WEBHOOK_SECRET) {
+      console.log('  GitHub: webhook unauthenticated (set GITHUB_WEBHOOK_SECRET to require signatures)');
+      update((s) => s.activity.unshift({
+        ts: Date.now(),
+        msg: 'GitHub merge webhook is unauthenticated - set GITHUB_WEBHOOK_SECRET to require signed deliveries',
+      }));
+    }
     resumePolling();
   });
 }

@@ -1,14 +1,16 @@
-// Task lifecycle: queued -> working -> verifying -> done | failed.
+// Task lifecycle: queued -> working -> verifying -> done | failed | reopened.
 // Real mode: dispatch launches a Cursor Background Agent and polls it.
 // Demo mode: a timer advances tasks through scripted stages so the office can
-// test the full loop without credentials.
+// test the full loop without credentials. Both modes park at "verifying" once
+// a PR is open; merge intake (webhook or manual) drives verification (M4).
 
 import { getState, update, nextId } from './store.mjs';
 import * as cursor from '../integrations/cursor.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import { hydrateSite, mergeCauses, diffCauses } from './aqa-sync.mjs';
 
-const DEMO_STAGE_MS = 5000;
+const DEMO_STAGE_MS = Number(process.env.DEMO_STAGE_MS) || 5000;
+const DEMO_VERIFY_MS = Number(process.env.DEMO_VERIFY_MS) || 2000;
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
 const CURSOR_MAX_POLL_ERRORS = 10;
 
@@ -150,7 +152,9 @@ function addLog(taskId, msg) {
 function line(msg) { return `[${new Date().toISOString().slice(11, 19)}] ${msg}`; }
 
 // ── Demo simulation ─────────────────────────────────────────────────────────
-// Advances demo tasks one stage per tick and fabricates the PR + verification.
+// Advances demo tasks one stage per tick and fabricates the PR. Tasks stop at
+// "verifying" (PR open, awaiting merge) - like real mode, completion happens
+// only through merge intake (POST /api/prs/:num/merged or the GitHub webhook).
 
 const DEMO_SCRIPT = {
   queued: (t, s) => {
@@ -181,22 +185,6 @@ const DEMO_SCRIPT = {
     });
     if (cause) cause.status = 'pr';
   },
-  verifying: (t, s) => {
-    t.state = 'done';
-    const cause = s.causes.find((c) => c.id === t.causeId);
-    const pr = s.prs.find((p) => p.taskId === t.id);
-    const cleared = cause?.instances || 0;
-    t.log.push(line(`merged (demo), AQA re-run complete: ${cleared} violations cleared`));
-    if (pr) { pr.state = 'merged-verified'; pr.verification.actual = -cleared; }
-    if (cause) cause.status = 'fixed';
-    const site = s.sites.find((x) => x.id === t.siteId);
-    if (site && cause) {
-      site.total = Math.max(0, site.total - cleared);
-      if (cause.severity === 'critical') site.critical = Math.max(0, site.critical - 1);
-      if (site.critical === 0 && site.status === 'critical') site.status = site.total > 0 ? 'fixing' : 'healthy';
-    }
-    s.activity.unshift({ ts: Date.now(), msg: `Task ${t.id} verified: ${cleared} violations cleared` });
-  },
 };
 
 setInterval(() => {
@@ -215,18 +203,21 @@ setInterval(() => {
 // results. Cause statuses survive re-hydration (mergeCauses) so in-flight
 // tasks stay linked; the run delta lands on site.lastDiff.
 
+// Fire-and-forget from the scan endpoint; verification awaits the returned
+// promise, which resolves true when the rescan completed and false on error.
 export function startRealScan(siteId) {
   update((s) => {
     const site = s.sites.find((x) => x.id === siteId);
     if (site) site.scanState = 'running';
     s.activity.unshift({ ts: Date.now(), msg: `AQA scan started for ${site?.url || siteId}` });
   });
-  runRealScan(siteId).catch((err) => {
+  return runRealScan(siteId).then(() => true).catch((err) => {
     update((s) => {
       const site = s.sites.find((x) => x.id === siteId);
       if (site) site.scanState = null;
       s.activity.unshift({ ts: Date.now(), msg: `AQA scan failed for ${site?.url || siteId}: ${err.message}` });
     });
+    return false;
   });
 }
 
@@ -293,6 +284,91 @@ async function waitForRun(runId) {
 }
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+// ── Merge verification (M4) ─────────────────────────────────────────────────
+// Merge intake (GitHub webhook or POST /api/prs/:num/merged) calls verifyMerge
+// with the open PR record. Real mode re-runs the site's AQA test and reads the
+// cause back from the re-hydrated state; demo mode simulates the rescan. A
+// cleared cause completes the task; a persisting one reopens it for re-dispatch.
+
+export async function verifyMerge(pr) {
+  const task = getState().tasks.find((t) => t.id === pr.taskId);
+  const causeId = task?.causeId;
+  const before = getState().causes.find((c) => c.id === causeId)?.instances ?? pr.instances ?? 0;
+
+  update((s) => {
+    const p = s.prs.find((x) => x.taskId === pr.taskId && x.num === pr.num);
+    if (p) p.state = 'merged-verifying';
+    const t = s.tasks.find((x) => x.id === pr.taskId);
+    if (t) t.log.push(line('merge detected, starting verification re-run'));
+    s.activity.unshift({ ts: Date.now(), msg: `PR #${pr.num} merged - verification re-run started` });
+  });
+
+  const site = getState().sites.find((x) => x.id === pr.siteId);
+  const realScan = aqa.isReal && !!site?.testId;
+  if (realScan) {
+    const ok = await startRealScan(site.id);
+    if (!ok) {
+      // Rescan never completed: not a verdict on the fix. Put the PR back to
+      // "open" so the merge can be re-posted once AQA recovers.
+      update((s) => {
+        const p = s.prs.find((x) => x.taskId === pr.taskId && x.num === pr.num);
+        if (p) p.state = 'open';
+        const t = s.tasks.find((x) => x.id === pr.taskId);
+        if (t) t.log.push(line('verification rescan failed - re-post the merge to retry'));
+      });
+      return;
+    }
+  } else {
+    await sleep(DEMO_VERIFY_MS);
+  }
+
+  // After a real rescan a fixed cause is absent from state; a persisting one
+  // kept its id (mergeCauses). Demo simulates the same outcome via the knobs.
+  const cause = getState().causes.find((c) => c.id === causeId);
+  const persists = realScan
+    ? !!cause && cause.instances > 0
+    : !!cause && (cause.ruleId?.endsWith('-persist') || process.env.DEMO_VERIFY_FAIL === '1');
+  const after = persists ? cause.instances : 0;
+  settleVerification(pr, causeId, before, after, realScan);
+}
+
+function settleVerification(prRef, causeId, before, after, realScan) {
+  update((s) => {
+    const pr = s.prs.find((x) => x.taskId === prRef.taskId && x.num === prRef.num);
+    const task = s.tasks.find((t) => t.id === prRef.taskId);
+    const cause = s.causes.find((c) => c.id === causeId);
+    const site = s.sites.find((x) => x.id === prRef.siteId);
+    if (after <= 0) {
+      const cleared = before;
+      if (task) {
+        task.state = 'done';
+        task.log.push(line(`AQA re-run complete: ${cleared} violations cleared`));
+      }
+      if (pr) { pr.state = 'merged-verified'; pr.verification.actual = -cleared; }
+      if (cause) cause.status = 'fixed';
+      // Real rescans re-hydrate site counters; the demo path adjusts them here.
+      if (!realScan && site && cause) {
+        site.total = Math.max(0, site.total - cleared);
+        if (cause.severity === 'critical') site.critical = Math.max(0, site.critical - 1);
+        if (site.critical === 0 && site.status === 'critical') site.status = site.total > 0 ? 'fixing' : 'healthy';
+      }
+      s.activity.unshift({ ts: Date.now(), msg: `Task ${prRef.taskId} verified: ${cleared} violations cleared` });
+    } else {
+      if (task) {
+        task.state = 'reopened';
+        task.log.push(line(`AQA re-run complete: ${after} of ${before} instances still failing`));
+        if (site?.lastDiff) {
+          task.log.push(line(`re-run diff: ${site.lastDiff.new.length} new, ${site.lastDiff.fixed.length} fixed, ${site.lastDiff.persisting.length} persisting`));
+        }
+        task.log.push(line('REOPENED: fix did not clear the cause - re-dispatch when ready'));
+      }
+      if (pr) { pr.state = 'merged-unverified'; pr.verification.actual = -(before - after); }
+      if (cause) cause.status = 'open';
+      s.activity.unshift({ ts: Date.now(), msg: `Task ${prRef.taskId} verification failed: ${after} instances persist - task reopened` });
+    }
+  });
+}
 
 // Demo scan: fabricate a completed run for a site (used by "Run tests" button).
 export function demoScan(site) {

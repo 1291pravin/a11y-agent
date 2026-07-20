@@ -28,8 +28,9 @@ npm run test:all   # both
 ```
 
 Without credentials the app runs in **demo mode**: three seeded sites, real task
-lifecycle (queued -> working -> verifying -> done), simulated Cursor agent with live
-logs and fabricated PRs. Everything on screen is testable end-to-end.
+lifecycle (queued -> working -> verifying, then done or reopened after merge),
+simulated Cursor agent with live logs and fabricated PRs. Everything on screen is
+testable end-to-end.
 
 ## Real mode
 
@@ -51,10 +52,13 @@ Real AQA scans land in M1, real Cursor dispatch in M2 - see PLAN.md.
 1. Open the dashboard - three sites, sorted by attention.
 2. Open **fr.filorga.com** - violations grouped into root causes.
 3. Click **Dispatch fix task** on a mapped cause.
-4. Watch **Tasks**: the card auto-advances Queued -> Working -> Verifying -> Done
-   (~5 s per stage) with a live log.
-5. Check **Pull requests**: evidence, diff context, and the verification delta.
+4. Watch **Tasks**: the card auto-advances Queued -> Working -> Verifying
+   (~5 s per stage) with a live log, then parks with an open PR awaiting merge.
+5. Check **Pull requests**: evidence, diff context, and the expected delta.
+   Click **Mark merged** to trigger the verification re-run (real installs can
+   point a GitHub webhook at `/api/webhooks/github` instead).
 6. Back on the site: violation counts dropped, cause shows "fixed & verified".
+   If the re-run still finds the violation, the task reopens for re-dispatch.
 
 **Reset demo data** button in the sidebar restores the seed.
 

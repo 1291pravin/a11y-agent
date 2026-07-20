@@ -197,6 +197,7 @@ function viewTasks() {
     ['queued', 'Queued'], ['working', 'Working'], ['verifying', 'Verifying'], ['done', 'Done'],
   ];
   const failed = S.tasks.filter((t) => t.state === 'failed');
+  const reopened = S.tasks.filter((t) => t.state === 'reopened');
   const sel = S.tasks.find((t) => t.id === selectedTask) || S.tasks.find((t) => t.state === 'working') || S.tasks[0];
   const running = S.tasks.filter((t) => ['queued', 'working', 'verifying'].includes(t.state)).length;
 
@@ -211,6 +212,7 @@ function viewTasks() {
         </div>`;
       }).join('')}
     </div></div>
+    ${reopened.length ? `<h2>Reopened <span class="chip warn">fix did not clear</span></h2>${reopened.map((t) => taskCard(t, sel)).join('')}` : ''}
     ${failed.length ? `<h2>Failed</h2>${failed.map((t) => taskCard(t, sel)).join('')}` : ''}
     ${sel ? `
       <h2>Task ${esc(sel.id)} - activity</h2>
@@ -226,7 +228,10 @@ function viewPrs() {
       <div class="panel" style="margin-bottom:14px">
         <div class="topline" style="margin-bottom:10px">
           <strong>#${esc(p.num)} ${esc(p.title)}</strong>
-          <span class="chip ${p.state === 'open' ? 'run' : 'good'}">${p.state === 'open' ? 'awaiting review' : 'merged &amp; verified'}</span>
+          <span>
+            ${p.state === 'open' ? `<button class="btn small" data-act="merged" data-id="${esc(String(p.num))}" title="Merged on GitHub? Trigger the verification re-run">Mark merged</button> ` : ''}
+            ${prChip(p)}
+          </span>
         </div>
         <div class="split">
           <div>
@@ -238,13 +243,30 @@ function viewPrs() {
           <div>
             <h6>Verification</h6>
             <p>Expected delta: <span class="chip good">${p.verification.expected} violations</span></p>
-            <p>${p.verification.actual !== null
-              ? `Re-run result: <span class="chip good">${p.verification.actual} cleared</span>`
-              : 'Runs automatically after merge. If violations persist, the task reopens.'}</p>
+            <p>${prVerification(p)}</p>
           </div>
         </div>
       </div>`;
     }).join('') : `<div class="empty">No PRs yet. Tasks open PRs as they complete.</div>`}`;
+}
+
+function prChip(p) {
+  const map = {
+    open: ['run', 'awaiting review'],
+    'merged-verifying': ['run', 'verifying fix'],
+    'merged-verified': ['good', 'merged &amp; verified'],
+    'merged-unverified': ['crit', 'fix did not clear'],
+  };
+  const [cls, label] = map[p.state] || ['idle', esc(p.state)];
+  return `<span class="chip ${cls}">${label}</span>`;
+}
+
+function prVerification(p) {
+  if (p.state === 'merged-verifying') return 'Merge detected - AQA re-run in progress&hellip;';
+  if (p.verification.actual === null) return 'Runs automatically after merge. If violations persist, the task reopens.';
+  return p.state === 'merged-verified'
+    ? `Re-run result: <span class="chip good">${p.verification.actual} cleared</span>`
+    : `Re-run result: <span class="chip crit">${p.verification.actual} cleared - task reopened</span>`;
 }
 
 function viewSettings() {
@@ -335,6 +357,7 @@ function taskCard(t, sel) {
       <b>${esc(t.title)}</b>
       <div class="m">${esc(site ? site.url.replace('https://', '') : '')} &middot; ${esc(t.file || 'unmapped')}</div>
       ${t.state === 'working' ? `<span class="cursor-tag">&#9670; ${t.agent} agent</span>` : ''}
+      ${t.state === 'reopened' ? `<span class="chip warn">reopened</span>` : ''}
       ${t.pr ? `<div class="m" style="margin-top:4px">PR #${esc(String(t.pr.num))}</div>` : ''}
     </div>`;
 }
@@ -367,6 +390,7 @@ function bindActions() {
       try {
         if (act === 'dispatch') await api('POST', `/api/causes/${id}/dispatch`);
         if (act === 'scan') await api('POST', `/api/sites/${id}/scan`);
+        if (act === 'merged') await api('POST', `/api/prs/${encodeURIComponent(id)}/merged`);
         if (act === 'export') {
           const cause = S.causes.find((c) => c.id === id);
           if (cause) {

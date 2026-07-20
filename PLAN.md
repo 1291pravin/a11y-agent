@@ -82,10 +82,23 @@ agent loop. No external credentials needed. This is what the office pulls and te
       (GET /api/sites/:id/fix-report, markdown download with per-rule
       suggested actions; wired to the "Export report" button)
 
-### M4 - Verification loop
+### M4 - Verification loop  [DONE]
 
-- [ ] GitHub webhook on merge -> re-run affected AQA tests -> record delta
-- [ ] Failed verification reopens the task with the re-run attached
+- [x] GitHub webhook on merge -> re-run affected AQA tests -> record delta
+      (POST /api/webhooks/github accepts pull_request events, matches PR number
+      + repository.full_name against tracked PRs, verifies X-Hub-Signature-256
+      when GITHUB_WEBHOOK_SECRET is set; POST /api/prs/:num/merged is the manual
+      fallback wired to the "Mark merged" button. Real mode awaits a full AQA
+      rescan; the delta lands in pr.verification.actual)
+- [x] Failed verification reopens the task with the re-run attached
+      (cause still present after the re-run -> task.state "reopened" with the
+      remaining count + lastDiff summary in its log, pr.state
+      "merged-unverified", cause back to "open" so it can be re-dispatched)
+
+Behavior change: demo tasks no longer auto-complete. Both demo and real tasks
+park at "verifying" once the PR is open and finish only through merge intake
+(webhook or Mark merged), so demo now exercises the same verification code as
+real mode.
 
 ### M5 - Fleet hardening
 
@@ -229,6 +242,41 @@ FLEET_SITES entry). The fix-report works in any mode.
       mappedFile (mergeCauses never overwrites a surviving mapping)
 - [ ] `node --test` passes (includes tests/m3.test.mjs: normalizeSelector and
       mapper unit tests against a fixture repo, plus the fix-report endpoint)
+
+## Verification checklist (M4)
+
+Works in demo mode (no credentials). Real mode additionally re-runs the site's
+AQA test before settling the verdict. Optional env: `GITHUB_WEBHOOK_SECRET`
+requires signed webhook deliveries; `DEMO_VERIFY_FAIL=1` forces the demo re-run
+to report the violation persisting.
+
+- [ ] Dispatch a fix task; the task advances to Verifying with an open PR and
+      PARKS there (no auto-done) - the PR card shows a "Mark merged" button
+- [ ] `curl -X POST localhost:4173/api/prs/<num>/merged` returns 202
+      `{"ok":true,"verifying":true}`; the PR chip flips to "verifying fix",
+      then the task moves to Done, the PR to "merged & verified" with
+      `verification.actual` filled, and the cause to "fixed & verified"
+- [ ] A second POST to the same PR returns 409
+- [ ] Webhook path (after demo reset + a fresh dispatch):
+
+  ```sh
+  curl -X POST localhost:4173/api/webhooks/github \
+    -H 'content-type: application/json' \
+    -d '{"action":"closed","pull_request":{"number":881,"merged":true},"repository":{"full_name":"acme/demo"}}'
+  ```
+
+  returns 202 `{"ok":true,"verifying":true}` and drives the same completion.
+  A closed-without-merge event, an unknown PR number, or a repo that matches
+  no tracked site all return 202 `{"ok":true,"ignored":true}`
+- [ ] With `GITHUB_WEBHOOK_SECRET` set: a delivery without a valid
+      `X-Hub-Signature-256` returns 401; a correctly signed one is processed.
+      Without the secret, startup logs an "unauthenticated webhook" activity note
+- [ ] With `DEMO_VERIFY_FAIL=1`: after the merge the task moves to REOPENED
+      (log shows the remaining instance count), the PR to "fix did not clear"
+      with the partial delta, and the cause returns to open with "Dispatch fix
+      task" available again - a second dispatch creates a fresh task
+- [ ] `node --test` passes (includes tests/m4.test.mjs: pass path, fail path,
+      webhook match + signature enforcement)
 
 ## Repo layout
 

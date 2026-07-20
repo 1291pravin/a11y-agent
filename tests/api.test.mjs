@@ -81,17 +81,30 @@ test('dispatch refuses unmapped causes', async () => {
   assert.equal(res.status, 400);
 });
 
-test('demo task auto-advances to done with a PR', async () => {
-  // demo loop ticks every 5s; full lifecycle needs ~3 ticks
+test('demo task auto-advances to verifying with a PR, then merge drives it to done', async () => {
+  // demo loop ticks every 5s; reaching "verifying" needs ~2 ticks. Tasks park
+  // there (M4): completion happens only through merge intake.
   let task;
   for (let i = 0; i < 22; i++) {
     await delay(1000);
     const state = await (await fetch(`${BASE}/api/state`)).json();
     task = state.tasks[0];
+    if (task?.state === 'verifying') break;
+  }
+  assert.equal(task.state, 'verifying');
+  assert.ok(task.pr?.num, 'task in verifying should reference a PR');
+
+  const merged = await fetch(`${BASE}/api/prs/${task.pr.num}/merged`, { method: 'POST' });
+  assert.equal(merged.status, 202);
+
+  // demo verification simulates the rescan in ~2s
+  for (let i = 0; i < 15; i++) {
+    await delay(1000);
+    const state = await (await fetch(`${BASE}/api/state`)).json();
+    task = state.tasks.find((t) => t.id === task.id);
     if (task?.state === 'done') break;
   }
   assert.equal(task.state, 'done');
-  assert.ok(task.pr?.num, 'completed task should reference a PR');
 });
 
 test('demo reset restores the seed', async () => {
