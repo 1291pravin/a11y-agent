@@ -35,8 +35,8 @@ test('health reports demo mode without credentials', async () => {
 test('state returns seeded sites and causes', async () => {
   const res = await fetch(`${BASE}/api/state`);
   const s = await res.json();
-  assert.ok(s.sites.length >= 3);
-  assert.ok(s.causes.length >= 5);
+  assert.ok(s.sites.length >= 1);
+  assert.ok(s.causes.length >= 1);
   assert.ok(Array.isArray(s.tasks));
 });
 

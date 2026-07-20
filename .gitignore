@@ -2,4 +2,7 @@ node_modules/
 data/state.json
 .env
 .env.*
+!.env.example
 *.log
+test-results/
+playwright-report/

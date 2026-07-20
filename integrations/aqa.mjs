@@ -27,6 +27,8 @@ function assertReal() {
 export async function rulesets() { assertReal(); return req('GET', '/a11y/tests/rulesets'); }
 export async function devices() { assertReal(); return req('GET', '/aqa/devices'); }
 export async function suiteGet(suiteId) { assertReal(); return req('GET', `/a11y/suites/${suiteId}`); }
+export async function testGet(testId) { assertReal(); return req('GET', `/a11y/tests/${testId}`); }
+export async function testsList(suiteId) { assertReal(); return req('GET', `/a11y/tests?suiteId=${encodeURIComponent(suiteId)}`); }
 
 export async function flowUrlCreate({ suiteId, name, url, deviceId, description }) {
   assertReal();
@@ -73,6 +75,16 @@ export async function runFlows(runId) { assertReal(); return req('GET', `/a11y/t
 export async function runIssues(runId, flowId) {
   assertReal();
   return req('GET', `/a11y/tests/runs/${runId}/flows/${flowId}/issues`);
+}
+
+export async function runFlowIssues(runId, flowId, { stepIndex = 0, changeIndex = -1, manual = false } = {}) {
+  assertReal();
+  const q = new URLSearchParams({
+    changeIndex: String(changeIndex),
+    manual: String(manual),
+    stepIndex: String(stepIndex),
+  });
+  return req('GET', `/a11y/tests/runs/${runId}/flows/${flowId}/issues?${q}`);
 }
 
 async function req(method, path, body, { form = false } = {}) {

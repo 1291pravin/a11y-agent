@@ -34,13 +34,13 @@ export function dispatchTask(cause, site) {
 
 async function launchReal(task, cause, site) {
   const prompt = cursor.buildFixPrompt(cause, site);
-  addLog(task.id, `launching Cursor background agent on ${site.repo}`);
+  addLog(task.id, `launching Cursor cloud agent on ${site.repo} (${cursor.MODEL_ID})`);
   const agent = await cursor.launchAgent({ repo: site.repo, prompt });
   update((s) => {
     const t = s.tasks.find((x) => x.id === task.id);
-    if (t) { t.agentId = agent.id; t.state = 'working'; }
+    if (t) { t.agentId = agent.id; t.runId = agent.runId; t.state = 'working'; }
   });
-  addLog(task.id, `cursor agent ${agent.id} started`);
+  addLog(task.id, `cursor agent ${agent.id} started (run ${agent.runId})`);
   pollReal(task.id);
 }
 
@@ -48,12 +48,13 @@ function pollReal(taskId) {
   const timer = setInterval(async () => {
     const t = getState().tasks.find((x) => x.id === taskId);
     if (!t || t.state === 'done' || t.state === 'failed') return clearInterval(timer);
+    if (!t.agentId || !t.runId) return;
     try {
-      const agent = await cursor.getAgent(t.agentId);
-      const status = (agent.status || '').toUpperCase();
-      if (status === 'FINISHED' || status === 'COMPLETED') {
+      const run = await cursor.getRun(t.agentId, t.runId);
+      const status = (run.status || '').toUpperCase();
+      if (status === 'FINISHED') {
         clearInterval(timer);
-        const prUrl = agent.target?.prUrl || agent.prUrl || null;
+        const prUrl = run.git?.branches?.find((b) => b.prUrl)?.prUrl || null;
         update((s) => {
           const task = s.tasks.find((x) => x.id === taskId);
           if (!task) return;
@@ -63,9 +64,9 @@ function pollReal(taskId) {
         addLog(taskId, `agent finished, PR: ${prUrl || 'none reported'}`);
         // M4: verification re-run happens on merge webhook; until then task parks
         // in "verifying" for human review.
-      } else if (status === 'ERROR' || status === 'FAILED') {
+      } else if (['ERROR', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(status)) {
         clearInterval(timer);
-        failTask(taskId, `cursor agent reported ${status}`);
+        failTask(taskId, `cursor run reported ${status}`);
       }
     } catch (err) {
       addLog(taskId, `poll error: ${err.message}`);

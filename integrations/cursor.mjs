@@ -1,27 +1,49 @@
-// Cursor Background Agents API client.
+// Cursor Cloud Agents API client (v1).
 // Real mode when CURSOR_API_KEY is set; otherwise callers use the demo simulator
 // in server/orchestrator.mjs.
-//
-// NOTE (M2): endpoint shapes are best-effort from Cursor's public Background Agents
-// API (api.cursor.com, v0). Validate against the office Cursor org before relying
-// on them - the API is young and may have changed.
 
-const BASE = 'https://api.cursor.com/v0';
+const BASE = 'https://api.cursor.com/v1';
 const apiKey = process.env.CURSOR_API_KEY;
+
+// Always dispatch fix tasks on Composer 2.5 (see GET /v1/models).
+export const MODEL_ID = 'composer-2.5';
 
 export const isReal = Boolean(apiKey);
 
-// Launch one background agent for one root cause. Returns { id, status }.
-export async function launchAgent({ repo, ref = 'main', prompt }) {
+// Verify the API key against Cursor. Returns { ok, ...profile } or throws.
+export async function verifyApiKey() {
   assertReal();
-  return req('POST', '/agents', {
-    prompt: { text: prompt },
-    source: { repository: `https://github.com/${repo}`, ref },
-    target: { autoCreatePr: true },
-  });
+  return req('GET', '/me');
 }
 
-export async function getAgent(id) { assertReal(); return req('GET', `/agents/${id}`); }
+// Launch one cloud agent for one root cause. Returns { id, runId, status }.
+export async function launchAgent({ repo, ref = 'main', prompt }) {
+  assertReal();
+  const res = await req('POST', '/agents', {
+    prompt: { text: prompt },
+    model: { id: MODEL_ID },
+    repos: [{ url: `https://github.com/${repo}`, startingRef: ref }],
+    autoCreatePR: true,
+  });
+  return {
+    id: res.agent.id,
+    runId: res.run?.id || res.agent.latestRunId,
+    status: res.run?.status || res.agent.status,
+  };
+}
+
+export async function getAgent(id) {
+  assertReal();
+  const agent = await req('GET', `/agents/${id}`);
+  if (!agent.latestRunId) return { ...agent, run: null };
+  const run = await getRun(id, agent.latestRunId);
+  return { ...agent, run };
+}
+
+export async function getRun(agentId, runId) {
+  assertReal();
+  return req('GET', `/agents/${agentId}/runs/${runId}`);
+}
 
 // Build the fix prompt from a triaged root cause. Kept here so the prompt contract
 // lives next to the API client. One task per root cause, evidence included.

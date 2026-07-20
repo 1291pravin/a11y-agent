@@ -16,6 +16,8 @@ async function refresh() {
     S = await res.json();
     document.getElementById('mode-badge').textContent =
       S.mode.aqa === 'real' || S.mode.cursor === 'real' ? 'live' : 'demo';
+    const resetBtn = document.getElementById('demo-reset');
+    if (resetBtn) resetBtn.textContent = S.mode.aqa === 'real' ? 'Sync from AQA' : 'Reset demo data';
     render();
   } catch (err) {
     main.innerHTML = `<div class="empty">Server unreachable: ${esc(err.message)}</div>`;
@@ -390,7 +392,8 @@ function bindActions() {
   if (reset && !reset.dataset.bound) {
     reset.dataset.bound = '1';
     reset.addEventListener('click', async () => {
-      await api('POST', '/api/demo/reset');
+      const path = S?.mode?.aqa === 'real' ? '/api/fleet/sync' : '/api/demo/reset';
+      await api('POST', path);
       selectedTask = null;
       await refresh();
     });

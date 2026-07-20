@@ -1,6 +1,6 @@
 // API handlers. All JSON in/out. Router in index.mjs calls handle(req, res, url).
 
-import { getState, update, nextId, resetToSeed } from './store.mjs';
+import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
 import { dispatchTask, demoScan } from './orchestrator.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
@@ -73,8 +73,14 @@ export async function handle(req, res, url) {
   }
 
   if (method === 'POST' && path === '/api/demo/reset') {
-    resetToSeed();
-    return json(res, 200, { ok: true });
+    const state = await resetToSeed();
+    return json(res, 200, { ok: true, sites: state.sites.length, mode: usesRealFleet() ? 'aqa' : 'demo' });
+  }
+
+  if (method === 'POST' && path === '/api/fleet/sync') {
+    if (!usesRealFleet()) return json(res, 400, { error: 'AQA credentials and FLEET_SITES required' });
+    const state = await bootstrapFleet({ clearFile: true });
+    return json(res, 200, { ok: true, sites: state.sites.length });
   }
 
   return json(res, 404, { error: 'not found' });

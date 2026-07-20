@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { handle as handleApi } from './routes.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
+import { bootstrapFleet, usesRealFleet, getState } from './store.mjs';
+import { hasFleetConfig } from './bootstrap.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(__dirname, '..', 'web');
@@ -50,9 +52,30 @@ async function serveStatic(pathname, res) {
   }
 }
 
-server.listen(PORT, () => {
-  console.log(`A11y Agent control plane`);
-  console.log(`  http://localhost:${PORT}`);
-  console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode'}`);
-  console.log(`  Cursor: ${cursor.isReal ? 'REAL' : 'demo mode'}`);
-});
+async function start() {
+  if (usesRealFleet()) {
+    try {
+      const s = getState();
+      if (!s.sites.length || s.activity?.[0]?.msg?.includes('Loading fleet')) {
+        console.log('  Fleet:  bootstrapping from AQA…');
+        await bootstrapFleet({ clearFile: true });
+        console.log(`  Fleet:  ${getState().sites.length} site(s) loaded`);
+      } else {
+        console.log(`  Fleet:  ${s.sites.length} site(s) from state`);
+      }
+    } catch (err) {
+      console.error('  Fleet:  bootstrap failed:', err.message);
+    }
+  } else if (hasFleetConfig() && !aqa.isReal) {
+    console.log('  Fleet:  FLEET_SITES set but AQA creds missing — demo mode');
+  }
+
+  server.listen(PORT, () => {
+    console.log(`A11y Agent control plane`);
+    console.log(`  http://localhost:${PORT}`);
+    console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode'}`);
+    console.log(`  Cursor: ${cursor.isReal ? 'REAL' : 'demo mode'}`);
+  });
+}
+
+start();
