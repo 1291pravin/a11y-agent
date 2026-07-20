@@ -19,7 +19,7 @@ Webapp (vanilla JS, no build step)
 Orchestrator API (Node 20, zero deps, server/)
    |-- AQA worker        integrations/aqa.mjs      provision, run, collect (real or demo)
    |-- Cursor client     integrations/cursor.mjs   Background Agents API -> fix PRs (real or demo)
-   |-- State store       server/store.mjs          JSON file (data/state.json), SQLite later
+   |-- State store       server/store.mjs          SQLite (node:sqlite, Node 22.5+) or JSON file fallback
 ```
 
 Design rules carried over from the foundation repo:
@@ -100,10 +100,30 @@ park at "verifying" once the PR is open and finish only through merge intake
 (webhook or Mark merged), so demo now exercises the same verification code as
 real mode.
 
-### M5 - Fleet hardening
+### M5 - Fleet hardening  [DONE]
 
-- [ ] SQLite store, auth, multi-user
-- [ ] Batch onboarding (CSV), staggered scheduling, rate-limit budget
+- [x] SQLite store (pragmatic scope: node:sqlite when available - Node 22.5+ -
+      with the same in-memory state object and debounced save writing a
+      single-row `state(id, json)` table; data/state.db or STATE_DB. Node 20
+      and STATE_FILE/STORE_BACKEND=json keep the JSON file store. An existing
+      state.json is imported once and renamed to state.json.migrated)
+- [x] Auth (pragmatic scope: one shared ADMIN_TOKEN required as
+      `authorization: Bearer <token>` on every non-GET /api/* route; GETs stay
+      open read-only and the GitHub webhook keeps its own HMAC auth. A single
+      shared token is deliberate M5 scope - per-user accounts and roles are
+      out of scope; "multi-user" here means many read-only viewers plus
+      token-holding operators)
+- [x] Batch onboarding (POST /api/sites/batch takes raw CSV - header row
+      url,repo,suiteId with optional testId,repoPath,framework in any order;
+      duplicate url/suite rows are skipped, bad rows are collected as
+      per-line errors without aborting; CSV section on the onboard screen)
+- [x] Staggered scheduling (SCHEDULE_ENABLED=1 + real AQA: each site hashes
+      to a stable weekly slot Mon-Thu 01:00-05:00 UTC, surfaced as
+      site.schedule; a 10-min tick kicks due scans - one at a time, at most
+      once per 6 days per site - and logs each to the activity feed)
+- [x] Rate-limit budget (global sliding-window limiter inside the AQA client:
+      AQA_MAX_RPM per AQA_RATE_WINDOW_MS, default 60/min, covering polling
+      and retries; exhausted callers wait for a free slot)
 
 ## How to run (office test)
 
@@ -278,23 +298,79 @@ to report the violation persisting.
 - [ ] `node --test` passes (includes tests/m4.test.mjs: pass path, fail path,
       webhook match + signature enforcement)
 
+## Verification checklist (M5)
+
+Everything below works in demo mode except the scheduler (needs real AQA).
+Optional env: `ADMIN_TOKEN`, `SCHEDULE_ENABLED=1`, `SCHEDULE_TICK_MS`,
+`STATE_DB`, `STORE_BACKEND=json`, `AQA_MAX_RPM`, `AQA_RATE_WINDOW_MS`.
+
+Store backend:
+
+- [ ] On Node 22.5+ startup logs `store: sqlite backend (...state.db)`; on
+      Node 20, or with `STORE_BACKEND=json` or `STATE_FILE` set, it logs
+      `store: json backend (...state.json)`
+- [ ] First sqlite boot with an existing data/state.json imports it (log:
+      "imported state.json into sqlite") and renames it to state.json.migrated
+- [ ] Onboard a site, restart the server: the site survives (state held in
+      the single-row `state` table, written on the same debounced save)
+
+Auth (start with `ADMIN_TOKEN=sekret`):
+
+- [ ] `curl localhost:4173/api/health` shows `"auth":true` in mode (and 200
+      without any header - GETs stay open)
+- [ ] `curl -X POST localhost:4173/api/demo/reset` returns 401
+      `{"error":"auth required"}`; adding
+      `-H "authorization: Bearer sekret"` returns 200
+- [ ] POST /api/webhooks/github still works without a bearer (its HMAC auth
+      is unchanged)
+- [ ] In the webapp, the first write action prompts for the token once,
+      stores it, and retries; Settings shows the "Admin auth" row enabled
+
+Batch onboarding:
+
+- [ ] Paste CSV into the onboard screen's "Batch onboard (CSV)" section:
+      valid rows create sites, duplicate url/suite rows are skipped, bad rows
+      list per-line errors inline
+- [ ] `curl -X POST localhost:4173/api/sites/batch --data-binary @sites.csv`
+      returns `{created, skipped, errors:[{line, error}]}`; a header row
+      without url/repo/suiteId returns 400
+
+Scheduling (real AQA + `SCHEDULE_ENABLED=1`):
+
+- [ ] Startup logs "weekly staggered scans enabled"; Settings shows the
+      "Scheduled scans" row enabled and `/api/state` sites carry
+      `schedule: {day, hour}` (stable per site, Mon-Thu, 01:00-05:00 UTC)
+- [ ] When a site's slot matches the current UTC weekday+hour, the tick kicks
+      its scan (activity: "Scheduled weekly scan started..."), sets
+      `lastScheduledScanAt`, and will not re-kick within 6 days
+- [ ] Demo mode or `SCHEDULE_ENABLED` unset: no timer, Settings row disabled
+
+Rate budget:
+
+- [ ] With `AQA_MAX_RPM=2 AQA_RATE_WINDOW_MS=1000`, the third AQA request in
+      a burst waits ~1 s for a slot (covers polling and retries)
+- [ ] `node --test` passes (includes tests/m5.test.mjs: auth, CSV batch,
+      limiter, slotFor, and a sqlite restart test that skips on Node < 22.5)
+
 ## Repo layout
 
 ```
 server/
   index.mjs         HTTP server + static + API routing
-  routes.mjs        API handlers
-  store.mjs         JSON store, seed data, persistence
+  routes.mjs        API handlers (M5: admin-token auth, CSV batch onboarding)
+  store.mjs         state store: sqlite (node:sqlite) or JSON file backend (M5)
   bootstrap.mjs     fleet config + startup hydration from AQA
   aqa-sync.mjs      shared AQA hydration, cause grouping, merge + run diffing
   mapper.mjs        selector-to-source index + cause mapping (M3)
+  scheduler.mjs     staggered weekly scan slots + tick loop (M5)
   orchestrator.mjs  task lifecycle, real scan pipeline, demo simulation loop
 integrations/
-  aqa.mjs           AQA v3.1 client (ported, + unverified results endpoints)
+  aqa.mjs           AQA v3.1 client (+ global rate budget, M5)
   cursor.mjs        Cursor Cloud Agents client (v1, validated against office org)
 web/
   index.html  app.css  app.js    the 7-screen SPA, hash routing, polls /api/state
 data/
-  state.json        runtime state (gitignored; recreated from seed)
+  state.db          runtime state, sqlite backend (gitignored; Node 22.5+)
+  state.json        runtime state, JSON backend (gitignored; recreated from seed)
 PLAN.md             this file
 ```

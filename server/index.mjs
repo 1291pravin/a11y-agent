@@ -11,6 +11,7 @@ import * as cursor from '../integrations/cursor.mjs';
 import { bootstrapFleet, usesRealFleet, getState, update } from './store.mjs';
 import { hasFleetConfig } from './bootstrap.mjs';
 import { resumePolling } from './orchestrator.mjs';
+import { initScheduler, schedulerEnabled } from './scheduler.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(__dirname, '..', 'web');
@@ -76,6 +77,9 @@ async function start() {
     console.log(`  http://localhost:${PORT}`);
     console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode'}`);
     console.log(`  Cursor: ${cursor.isReal ? 'REAL' : 'demo mode'}`);
+    console.log(`  Auth:   ${process.env.ADMIN_TOKEN ? 'admin token required for writes' : 'open (set ADMIN_TOKEN to protect writes)'}`);
+    console.log(`  Sched:  ${schedulerEnabled() ? 'weekly staggered scans enabled' : 'disabled (set SCHEDULE_ENABLED=1 with real AQA)'}`);
+    initScheduler();
     if (!process.env.GITHUB_WEBHOOK_SECRET) {
       console.log('  GitHub: webhook unauthenticated (set GITHUB_WEBHOOK_SECRET to require signatures)');
       update((s) => s.activity.unshift({

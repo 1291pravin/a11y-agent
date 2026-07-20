@@ -47,6 +47,27 @@ real mode. `npm start` loads `.env` via Node's `--env-file` flag.
 Set any of these and restart; each integration switches to real independently.
 Real AQA scans land in M1, real Cursor dispatch in M2 - see PLAN.md.
 
+### Fleet hardening (M5, all optional)
+
+```sh
+ADMIN_TOKEN=...           # require "authorization: Bearer <token>" on all write
+                          # routes (GETs stay open; the GitHub webhook keeps its
+                          # own HMAC auth). The webapp prompts once and stores it.
+SCHEDULE_ENABLED=1        # staggered weekly scans (real AQA only): each site
+                          # hashes to a stable Mon-Thu 01:00-05:00 UTC slot
+STATE_DB=data/state.db    # move the SQLite state DB (used automatically when
+                          # node:sqlite exists, i.e. Node 22.5+)
+STORE_BACKEND=json        # force the JSON file store even where SQLite exists
+AQA_MAX_RPM=60            # AQA request budget per sliding window (default 60/min;
+                          # applies to polling and retries too)
+```
+
+State persists to SQLite (`data/state.db`) on Node 22.5+ and to `data/state.json`
+elsewhere; an existing `state.json` is imported into the DB once on first boot.
+Batch onboarding: POST raw CSV (`url,repo,suiteId` header row, optional
+`testId,repoPath,framework`) to `/api/sites/batch`, or use the CSV section on
+the onboard screen.
+
 ## Try the demo loop
 
 1. Open the dashboard - three sites, sorted by attention.

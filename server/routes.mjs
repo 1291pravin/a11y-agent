@@ -5,17 +5,27 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
 import { dispatchTask, demoScan, startRealScan, verifyMerge } from './orchestrator.mjs';
 import { buildIndex, mapCause } from './mapper.mjs';
+import { slotFor, schedulerEnabled } from './scheduler.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
+
+// M5: optional shared admin token. When set, every non-GET /api/* route
+// requires "authorization: Bearer <token>" - except the GitHub webhook,
+// which has its own HMAC auth. GET routes stay open (read-only).
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 
 export async function handle(req, res, url) {
   const path = url.pathname;
   const method = req.method;
 
+  if (ADMIN_TOKEN && method !== 'GET' && path !== '/api/webhooks/github') {
+    if (!validBearer(req.headers.authorization)) return json(res, 401, { error: 'auth required' });
+  }
+
   if (method === 'GET' && path === '/api/health') {
     return json(res, 200, {
       ok: true,
-      mode: { aqa: aqa.isReal ? 'real' : 'demo', cursor: cursor.isReal ? 'real' : 'demo' },
+      mode: modeInfo(),
       time: new Date().toISOString(),
     });
   }
@@ -28,19 +38,34 @@ export async function handle(req, res, url) {
     const body = await readBody(req);
     const missing = ['url', 'repo', 'suiteId'].filter((k) => !body[k]);
     if (missing.length) return json(res, 400, { error: `missing: ${missing.join(', ')}` });
-    const site = {
-      id: nextId('site-'),
-      url: String(body.url), repo: String(body.repo), suiteId: String(body.suiteId),
-      repoPath: body.repoPath ? String(body.repoPath) : null,
-      status: 'onboarding', critical: 0, total: 0, trend: [], lastRun: null,
-      framework: body.framework || 'unknown',
-      flows: [],
-    };
+    const site = makeSite(body);
     update((s) => {
       s.sites.push(site);
       s.activity.unshift({ ts: Date.now(), msg: `Onboarded ${site.url}` });
     });
     return json(res, 201, site);
+  }
+
+  // M5: batch onboarding. Body is raw CSV text with a header row naming the
+  // columns (url,repo,suiteId required; testId,repoPath,framework optional;
+  // any order, unknown columns ignored). Rows whose url or suiteId already
+  // exist are skipped; rows missing required fields are collected as errors
+  // without aborting the batch.
+  if (method === 'POST' && path === '/api/sites/batch') {
+    const raw = await readRawBody(req);
+    const parsed = parseCsvBatch(raw);
+    if (parsed.error) return json(res, 400, { error: parsed.error });
+    let created = 0;
+    let skipped = 0;
+    update((s) => {
+      for (const row of parsed.rows) {
+        if (s.sites.some((x) => x.url === row.url || x.suiteId === row.suiteId)) { skipped += 1; continue; }
+        s.sites.push(makeSite(row));
+        created += 1;
+      }
+      if (created) s.activity.unshift({ ts: Date.now(), msg: `Batch onboarded ${created} site(s) from CSV (${skipped} skipped, ${parsed.errors.length} errors)` });
+    });
+    return json(res, 200, { created, skipped, errors: parsed.errors });
   }
 
   let m;
@@ -207,13 +232,80 @@ function publicState() {
   const s = getState();
   return {
     settings: s.settings,
-    mode: { aqa: aqa.isReal ? 'real' : 'demo', cursor: cursor.isReal ? 'real' : 'demo' },
-    sites: s.sites,
+    mode: modeInfo(),
+    sites: s.sites.map((x) => ({ ...x, schedule: slotFor(x.id) })),
     causes: s.causes,
     tasks: s.tasks,
     prs: s.prs,
     activity: s.activity.slice(0, 30),
   };
+}
+
+function modeInfo() {
+  return {
+    aqa: aqa.isReal ? 'real' : 'demo',
+    cursor: cursor.isReal ? 'real' : 'demo',
+    auth: Boolean(ADMIN_TOKEN),
+    schedule: schedulerEnabled(),
+  };
+}
+
+// Constant-time bearer comparison; a length mismatch fails fast (length is
+// not secret - the token itself is).
+function validBearer(header) {
+  const a = Buffer.from(String(header || ''));
+  const b = Buffer.from(`Bearer ${ADMIN_TOKEN}`);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function makeSite(body) {
+  return {
+    id: nextId('site-'),
+    url: String(body.url), repo: String(body.repo), suiteId: String(body.suiteId),
+    repoPath: body.repoPath ? String(body.repoPath) : null,
+    testId: body.testId ? String(body.testId) : null,
+    status: 'onboarding', critical: 0, total: 0, trend: [], lastRun: null,
+    framework: body.framework || 'unknown',
+    flows: [],
+  };
+}
+
+// Minimal CSV: comma-separated cells, optional surrounding double quotes,
+// values trimmed, blank lines skipped. Commas inside quoted cells are not
+// supported (no field in a site row legitimately contains one).
+const CSV_COLUMNS = {
+  url: 'url', repo: 'repo', suiteid: 'suiteId',
+  testid: 'testId', repopath: 'repoPath', framework: 'framework',
+};
+
+function parseCsvBatch(raw) {
+  const lines = String(raw || '').split(/\r?\n/);
+  let headers = null;
+  const rows = [];
+  const errors = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    const cells = lines[i].split(',').map(unquoteCell);
+    if (!headers) {
+      headers = cells.map((h) => CSV_COLUMNS[h.toLowerCase()] || null);
+      const have = new Set(headers);
+      const missing = ['url', 'repo', 'suiteId'].filter((k) => !have.has(k));
+      if (missing.length) return { error: `CSV header row must include: ${missing.join(', ')}` };
+      continue;
+    }
+    const row = {};
+    headers.forEach((k, idx) => { if (k && cells[idx]) row[k] = cells[idx]; });
+    const missing = ['url', 'repo', 'suiteId'].filter((k) => !row[k]);
+    if (missing.length) { errors.push({ line: i + 1, error: `missing: ${missing.join(', ')}` }); continue; }
+    rows.push(row);
+  }
+  if (!headers) return { error: 'empty CSV - header row with url,repo,suiteId required' };
+  return { rows, errors };
+}
+
+function unquoteCell(cell) {
+  const t = cell.trim();
+  return t.length >= 2 && t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1).trim() : t;
 }
 
 function json(res, status, obj) {

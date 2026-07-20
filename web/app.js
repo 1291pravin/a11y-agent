@@ -5,6 +5,8 @@
 
 let S = null;            // latest server state
 let selectedTask = null; // task id shown in the log pane
+let token = localStorage.getItem('a11yAgentToken') || ''; // M5 admin token
+let batchResult = null;  // last CSV batch response, rendered on the onboard screen
 
 const main = document.getElementById('main');
 
@@ -24,12 +26,25 @@ async function refresh() {
   }
 }
 
-async function api(method, path, body) {
-  const res = await fetch(path, {
+async function api(method, path, body, opts = {}) {
+  const doFetch = () => fetch(path, {
     method,
-    headers: { 'content-type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
+    headers: {
+      'content-type': opts.raw ? 'text/csv' : 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: body === undefined ? undefined : (opts.raw ? body : JSON.stringify(body)),
   });
+  let res = await doFetch();
+  if (res.status === 401) {
+    // Admin auth is on and the stored token is missing/stale: ask once, retry.
+    const entered = window.prompt('Admin token required (ADMIN_TOKEN):');
+    if (entered) {
+      token = entered.trim();
+      localStorage.setItem('a11yAgentToken', token);
+      res = await doFetch();
+    }
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
@@ -43,8 +58,13 @@ function route() {
   return { view: parts[0] || 'dashboard', id: parts[1] || null, sub: parts[2] || null };
 }
 
-function render() {
+function render(force) {
   if (!S) return;
+  // The 3s poll re-renders the whole main pane; skip it while the user is
+  // typing in a form field so onboard/CSV input is not wiped mid-edit.
+  // Navigation (hashchange) always renders.
+  const ae = document.activeElement;
+  if (force !== true && ae && main.contains(ae) && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')) return;
   const r = route();
   document.querySelectorAll('#nav a').forEach((a) => {
     const v = a.dataset.view;
@@ -63,7 +83,7 @@ function render() {
   bindActions();
 }
 
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', () => render(true));
 
 // ── screens ─────────────────────────────────────────────────────────────────
 
@@ -189,7 +209,20 @@ function viewOnboard() {
         <a class="btn ghost" href="#/sites">Cancel</a>
         <button class="btn" type="submit">Onboard</button>
       </div>
-    </form>`;
+    </form>
+    <h2>Batch onboard (CSV)</h2>
+    <div class="form">
+      <div class="field">
+        <label for="batch-csv">CSV rows</label>
+        <textarea id="batch-csv" rows="6" style="width:100%;resize:vertical" placeholder="url,repo,suiteId&#10;https://shop.example.com,acme/shop-frontend,TS35353"></textarea>
+        <div class="hint">Header row required: url,repo,suiteId - optional columns: testId,repoPath,framework (any order). Rows whose url or suite already exist are skipped.</div>
+      </div>
+      <div class="err" id="batch-err" role="alert"></div>
+      <div id="batch-result" class="hint" aria-live="polite">${batchResultHtml()}</div>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px">
+        <button class="btn" type="button" id="batch-submit">Onboard batch</button>
+      </div>
+    </div>`;
 }
 
 function viewTasks() {
@@ -289,6 +322,12 @@ function viewSettings() {
         <tr><td>Notifications</td>
           <td><span class="chip ${S.settings.notifications.channel ? 'good' : 'idle'}">${S.settings.notifications.channel ? 'set' : 'not set'}</span></td>
           <td>${esc(S.settings.notifications.channel || 'No channel configured (M5).')}</td></tr>
+        <tr><td>Admin auth</td>
+          <td><span class="chip ${S.mode.auth ? 'good' : 'idle'}">${S.mode.auth ? 'enabled' : 'disabled'}</span></td>
+          <td>Set <span class="mono">ADMIN_TOKEN</span> to require a bearer token on all write actions (reads stay open).</td></tr>
+        <tr><td>Scheduled scans</td>
+          <td><span class="chip ${S.mode.schedule ? 'good' : 'idle'}">${S.mode.schedule ? 'enabled' : 'disabled'}</span></td>
+          <td>Set <span class="mono">SCHEDULE_ENABLED=1</span> with real AQA for staggered weekly scans (each site gets a stable Mon-Thu 01:00-05:00 UTC slot).</td></tr>
       </tbody>
     </table></div>
     <h2>Default policies (per-site override lands in M3)</h2>
@@ -362,6 +401,13 @@ function taskCard(t, sel) {
     </div>`;
 }
 
+function batchResultHtml() {
+  if (!batchResult) return '';
+  const r = batchResult;
+  return `Created ${esc(String(r.created))}, skipped ${esc(String(r.skipped))} (already onboarded)`
+    + (r.errors?.length ? `<br>${r.errors.map((e) => `Line ${esc(String(e.line))}: ${esc(e.error)}`).join('<br>')}` : '');
+}
+
 function trendBar(trend) {
   if (!trend || !trend.length) return '-';
   const max = Math.max(...trend, 1);
@@ -418,6 +464,25 @@ function bindActions() {
       location.hash = `#/site/${site.id}`;
     } catch (err) {
       errBox.textContent = err.message;
+    }
+  });
+
+  const batch = document.getElementById('batch-submit');
+  if (batch) batch.addEventListener('click', async () => {
+    const errBox = document.getElementById('batch-err');
+    const csv = document.getElementById('batch-csv').value;
+    errBox.textContent = '';
+    if (!csv.trim()) { errBox.textContent = 'Paste CSV rows first.'; return; }
+    batch.disabled = true;
+    try {
+      batchResult = await api('POST', '/api/sites/batch', csv, { raw: true });
+      await refresh();
+      const resultBox = document.getElementById('batch-result');
+      if (resultBox) resultBox.innerHTML = batchResultHtml();
+    } catch (err) {
+      errBox.textContent = err.message;
+    } finally {
+      batch.disabled = false;
     }
   });
 

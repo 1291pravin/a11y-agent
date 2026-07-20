@@ -18,6 +18,22 @@ const apiKey = process.env.AQA_API_KEY;
 
 export const isReal = Boolean(teamslug && apiKey);
 
+// M5: global sliding-window rate budget shared by every AQA request in this
+// process - polling and retries included. When the window is exhausted the
+// caller awaits until the oldest request ages out.
+const MAX_RPM = Math.max(1, Number(process.env.AQA_MAX_RPM) || 60);
+const RATE_WINDOW_MS = Math.max(1, Number(process.env.AQA_RATE_WINDOW_MS) || 60000);
+const rateStamps = [];
+
+export async function acquireRateSlot() {
+  for (;;) {
+    const now = Date.now();
+    while (rateStamps.length && now - rateStamps[0] >= RATE_WINDOW_MS) rateStamps.shift();
+    if (rateStamps.length < MAX_RPM) { rateStamps.push(now); return; }
+    await sleep(rateStamps[0] + RATE_WINDOW_MS - now + 5);
+  }
+}
+
 function assertReal() {
   if (!isReal) {
     const e = new Error('AQA credentials not set (AQA_TEAMSLUG, AQA_API_KEY) - demo mode');
@@ -104,6 +120,7 @@ async function req(method, path, body, { form = false } = {}) {
   }
   let lastErr;
   for (let attempt = 0; attempt < 3; attempt++) {
+    await acquireRateSlot();
     const res = await fetch(url, { method, headers, body: payload });
     const text = await res.text();
     const parsed = text ? safeJson(text) : undefined;
