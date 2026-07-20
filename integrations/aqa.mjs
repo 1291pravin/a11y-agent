@@ -5,11 +5,13 @@
 // Mutations are idempotent: existing_name errors fall back to lookup-and-return.
 // Retry with backoff on 429/5xx (AQA schedulers are known to 500 intermittently).
 //
-// NOTE (M1): the run/results endpoints below (testRun, runGet, runFlows, runIssues)
-// are wired from the OpenAPI spec index in the foundation repo but have NOT been
-// validated against a live account. Verify shapes before trusting them.
+// NOTE (M1): testGet, runFlows and runFlowIssues response shapes were validated
+// against a live account. testRun and runGet are wired from the OpenAPI spec index
+// and handled defensively by callers (status|state field, finished/completed/done
+// vs error/failed) - they still need one confirmation pass against a live run.
 
-const BASE = 'https://api-aqa.usablenet.com/v3.1';
+// AQA_BASE override lets tests point the client at a local mock server.
+const BASE = process.env.AQA_BASE || 'https://api-aqa.usablenet.com/v3.1';
 
 const teamslug = process.env.AQA_TEAMSLUG;
 const apiKey = process.env.AQA_API_KEY;
@@ -68,7 +70,7 @@ export async function schedulerCreate({ testId, cadence = 'week', repeats = 0 })
   return req('POST', `/a11y/tests/${testId}/scheduler/create`, body);
 }
 
-// M1 stubs - paths from the OpenAPI spec index, shapes unverified.
+// Paths from the OpenAPI spec index; testRun/runGet shapes handled defensively upstream.
 export async function testRun(testId) { assertReal(); return req('POST', `/a11y/tests/${testId}/run`); }
 export async function runGet(runId) { assertReal(); return req('GET', `/a11y/tests/runs/${runId}`); }
 export async function runFlows(runId) { assertReal(); return req('GET', `/a11y/tests/runs/${runId}/flows`); }

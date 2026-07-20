@@ -8,7 +8,10 @@ import { bootstrapFromAqa, demoSeed, hasFleetConfig } from './bootstrap.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const STATE_PATH = resolve(__dirname, '..', 'data', 'state.json');
+// STATE_FILE override keeps parallel test runs from sharing data/state.json.
+const STATE_PATH = process.env.STATE_FILE
+  ? resolve(process.env.STATE_FILE)
+  : resolve(__dirname, '..', 'data', 'state.json');
 
 let state = load();
 let saveTimer = null;

@@ -5,8 +5,11 @@
 
 import { getState, update, nextId } from './store.mjs';
 import * as cursor from '../integrations/cursor.mjs';
+import * as aqa from '../integrations/aqa.mjs';
+import { hydrateSite, mergeCauses, diffCauses } from './aqa-sync.mjs';
 
 const DEMO_STAGE_MS = 5000;
+const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
 
 export function dispatchTask(cause, site) {
   const task = {
@@ -150,6 +153,89 @@ setInterval(() => {
     }
   });
 }, DEMO_STAGE_MS);
+
+// ── Real AQA scan ───────────────────────────────────────────────────────────
+// Trigger a run, poll until terminal, then re-hydrate the site from the fresh
+// results. Cause statuses survive re-hydration (mergeCauses) so in-flight
+// tasks stay linked; the run delta lands on site.lastDiff.
+
+export function startRealScan(siteId) {
+  update((s) => {
+    const site = s.sites.find((x) => x.id === siteId);
+    if (site) site.scanState = 'running';
+    s.activity.unshift({ ts: Date.now(), msg: `AQA scan started for ${site?.url || siteId}` });
+  });
+  runRealScan(siteId).catch((err) => {
+    update((s) => {
+      const site = s.sites.find((x) => x.id === siteId);
+      if (site) site.scanState = null;
+      s.activity.unshift({ ts: Date.now(), msg: `AQA scan failed for ${site?.url || siteId}: ${err.message}` });
+    });
+  });
+}
+
+async function runRealScan(siteId) {
+  const site = getState().sites.find((x) => x.id === siteId);
+  if (!site) throw new Error('site not found');
+  const runId = await startRun(site.testId);
+  await waitForRun(runId);
+
+  const hydrated = await hydrateSite({
+    id: site.id,
+    url: site.url,
+    repo: site.repo,
+    suiteId: site.suiteId,
+    testId: site.testId,
+    framework: site.framework,
+  });
+
+  update((s) => {
+    const idx = s.sites.findIndex((x) => x.id === siteId);
+    if (idx === -1) return;
+    const prev = s.sites[idx];
+    const prevCauses = s.causes.filter((c) => c.siteId === siteId);
+    const causes = mergeCauses(prevCauses, hydrated.causes);
+    const next = hydrated.site;
+    next.trend = [...(prev.trend || []), next.total].slice(-12);
+    next.scanState = null;
+    next.lastDiff = diffCauses(prevCauses, causes);
+    s.sites[idx] = next;
+    s.causes = s.causes.filter((c) => c.siteId !== siteId).concat(causes);
+    s.activity.unshift({
+      ts: Date.now(),
+      msg: `AQA scan finished for ${next.url}: ${next.lastDiff.new.length} new, ${next.lastDiff.fixed.length} fixed, ${next.lastDiff.persisting.length} persisting`,
+    });
+  });
+}
+
+async function startRun(testId) {
+  const started = await aqa.testRun(testId);
+  const runId = started?.id || started?.runId || started?.run?.id;
+  if (runId) return runId;
+  // Some deployments only ack the trigger; fall back to the newest run on the test.
+  const test = await aqa.testGet(testId);
+  const latest = test.runs?.[0]?.id;
+  if (!latest) throw new Error('testRun returned no run id and the test lists no runs');
+  return latest;
+}
+
+// runGet's exact shape is unverified (see aqa.mjs); read status defensively.
+async function waitForRun(runId) {
+  const pollMs = Number(process.env.AQA_POLL_MS) || 10000;
+  const deadline = Date.now() + SCAN_TIMEOUT_MS;
+  for (;;) {
+    const run = await aqa.runGet(runId);
+    const status = String(run?.status || run?.state || '').toLowerCase();
+    if (['finished', 'completed', 'done', 'success', 'succeeded'].includes(status)) return run;
+    if (['error', 'failed', 'failure', 'cancelled', 'canceled'].includes(status)) {
+      throw new Error(`run ${runId} ended with status "${status}"`);
+    }
+    if (Date.now() >= deadline) throw new Error(`run ${runId} still not terminal after ${SCAN_TIMEOUT_MS / 60000} min`);
+    await sleep(pollMs);
+  }
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 // Demo scan: fabricate a completed run for a site (used by "Run tests" button).
 export function demoScan(site) {

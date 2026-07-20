@@ -46,12 +46,18 @@ agent loop. No external credentials needed. This is what the office pulls and te
 - [x] Cursor Background Agents client (real calls when CURSOR_API_KEY set; demo otherwise)
 - [x] AQA client skeleton ported from aqa-usablenet-helper (real calls when AQA_* set)
 
-### M1 - Real AQA results loop
+### M1 - Real AQA results loop  [DONE]
 
-- [ ] Wire run/results endpoints (tests.run, runs.get, runs.flows, runs.issues) and
-      validate response shapes against a real AQA account (they are unverified stubs now)
-- [ ] `scan` action triggers real runs, polls, writes violations into the store
-- [ ] Run diffing: new / fixed / persisting per flow
+- [x] Wire run/results endpoints (tests.run, runs.get, runs.flows, runs.issues) and
+      validate response shapes against a real AQA account (testGet/runFlows/runFlowIssues
+      validated by the office; testRun/runGet are designed defensively - status|state
+      field, finished/completed/done vs error/failed, case-insensitive - and still need
+      one confirmation pass against a live run)
+- [x] `scan` action triggers real runs, polls, writes violations into the store
+      (poll every AQA_POLL_MS, default 10 s, up to 10 min; shared hydration in
+      server/aqa-sync.mjs; matched causes keep id/status/mappedFile across rescans)
+- [x] Run diffing: new / fixed / persisting root causes, stored as `site.lastDiff`
+      and summarized on the site detail screen
 
 ### M2 - Real Cursor dispatch
 
@@ -142,6 +148,31 @@ Settings (screen 7):
 - [ ] Shows connection status per integration (demo/real) with masked keys
 - [ ] Policy defaults render and persist after edit + reload
 
+## Verification checklist (M1)
+
+Needs real mode: AQA_TEAMSLUG + AQA_API_KEY set, FLEET_SITES with a `testId` per site.
+Optional env: `AQA_BASE` repoints the client (tests use a local mock), `AQA_POLL_MS`
+sets the poll cadence in ms (default 10000).
+
+- [ ] `curl localhost:4173/api/health` shows `"aqa":"real"`
+- [ ] `curl localhost:4173/api/state` lists your site with its `testId`
+- [ ] `curl -X POST localhost:4173/api/sites/<siteId>/scan` returns 202
+      `{"ok":true,"mode":"real"}`
+- [ ] While the run is in flight, `/api/state` shows `"scanState":"running"` on the
+      site, and a second `curl -X POST .../scan` returns 409
+- [ ] `curl -X POST localhost:4173/api/sites/<siteWithoutTestId>/scan` returns 400
+- [ ] When the run finishes (polled every 10 s, up to 10 min): flow violations and
+      root causes refresh, `scanState` clears, and `site.lastDiff` holds
+      `{new, fixed, persisting, at}` with `{title, ruleId, instances}` entries
+- [ ] Causes that persist across the rescan keep their id/status/mappedFile
+      (check a cause with a dispatched task stays in "task")
+- [ ] Site detail screen shows "Last scan: N new, M fixed, K persisting" under the title
+- [ ] If the run fails or times out, `scanState` clears and the activity feed logs
+      the error
+- [ ] Demo mode unchanged: without AQA creds, scan returns 202 `{"mode":"demo"}`
+- [ ] `node --test` passes (includes tests/m1.test.mjs, which drives the whole
+      pipeline against a mock AQA server via AQA_BASE)
+
 ## Repo layout
 
 ```
@@ -149,7 +180,9 @@ server/
   index.mjs         HTTP server + static + API routing
   routes.mjs        API handlers
   store.mjs         JSON store, seed data, persistence
-  orchestrator.mjs  task lifecycle + demo simulation loop
+  bootstrap.mjs     fleet config + startup hydration from AQA
+  aqa-sync.mjs      shared AQA hydration, cause grouping, merge + run diffing
+  orchestrator.mjs  task lifecycle, real scan pipeline, demo simulation loop
 integrations/
   aqa.mjs           AQA v3.1 client (ported, + unverified results endpoints)
   cursor.mjs        Cursor Background Agents client (unverified contract)

@@ -1,7 +1,7 @@
 // API handlers. All JSON in/out. Router in index.mjs calls handle(req, res, url).
 
 import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
-import { dispatchTask, demoScan } from './orchestrator.mjs';
+import { dispatchTask, demoScan, startRealScan } from './orchestrator.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
 
@@ -45,8 +45,10 @@ export async function handle(req, res, url) {
     const site = getState().sites.find((x) => x.id === m[1]);
     if (!site) return json(res, 404, { error: 'site not found' });
     if (aqa.isReal) {
-      // M1: trigger real runs per test and poll. Not implemented yet.
-      return json(res, 501, { error: 'real AQA scan lands in M1; demo mode works today' });
+      if (!site.testId) return json(res, 400, { error: 'site has no AQA testId; provision a test before scanning' });
+      if (site.scanState === 'running') return json(res, 409, { error: 'scan already running for this site' });
+      startRealScan(site.id);
+      return json(res, 202, { ok: true, mode: 'real' });
     }
     demoScan(site);
     return json(res, 202, { ok: true, mode: 'demo' });

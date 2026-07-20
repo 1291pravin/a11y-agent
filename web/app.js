@@ -130,6 +130,7 @@ function viewSite(r) {
       <h1>${esc(site.url.replace('https://', ''))} <span class="chip acc">Suite ${esc(site.suiteId)}</span> ${siteChip(site)}</h1>
       <span><button class="btn ghost" data-act="scan" data-id="${site.id}">Run tests</button></span>
     </div>
+    ${site.lastDiff ? `<div class="hint" style="margin:-4px 0 12px">Last scan: ${esc(String(site.lastDiff.new.length))} new, ${esc(String(site.lastDiff.fixed.length))} fixed, ${esc(String(site.lastDiff.persisting.length))} persisting</div>` : ''}
     <div class="cards">
       ${kpi(urlFlows, 'URL flows')}
       ${kpi(clickFlows, 'Click-state flows')}
