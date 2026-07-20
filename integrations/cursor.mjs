@@ -2,7 +2,8 @@
 // Real mode when CURSOR_API_KEY is set; otherwise callers use the demo simulator
 // in server/orchestrator.mjs.
 
-const BASE = 'https://api.cursor.com/v1';
+// CURSOR_BASE override lets tests point the client at a local mock server.
+const BASE = process.env.CURSOR_BASE || 'https://api.cursor.com/v1';
 const apiKey = process.env.CURSOR_API_KEY;
 
 // Always dispatch fix tasks on Composer 2.5 (see GET /v1/models).

@@ -59,12 +59,15 @@ agent loop. No external credentials needed. This is what the office pulls and te
 - [x] Run diffing: new / fixed / persisting root causes, stored as `site.lastDiff`
       and summarized on the site detail screen
 
-### M2 - Real Cursor dispatch
+### M2 - Real Cursor dispatch  [DONE]
 
-- [ ] Verify Background Agents API contract against office Cursor org (endpoint shapes
-      in integrations/cursor.mjs are best-effort and must be confirmed)
-- [ ] Dispatch builds the prompt from violation evidence + mapped file
-- [ ] Webhook or poll to track agent completion -> PR number into the store
+- [x] Verify Background Agents API contract against office Cursor org (v1 contract
+      validated against the office org; the client targets /v1 with composer-2.5 -
+      POST /agents, GET /agents/{id}, GET /agents/{id}/runs/{runId})
+- [x] Dispatch builds the prompt from violation evidence + mapped file
+- [x] Webhook or poll to track agent completion -> PR number into the store
+      (poll every CURSOR_POLL_MS with a CURSOR_POLL_DEADLINE_MS cap, PR record
+      mirrors the demo shape, polling resumes across restarts)
 
 ### M3 - Root-cause mapper
 
@@ -173,6 +176,32 @@ sets the poll cadence in ms (default 10000).
 - [ ] `node --test` passes (includes tests/m1.test.mjs, which drives the whole
       pipeline against a mock AQA server via AQA_BASE)
 
+## Verification checklist (M2)
+
+Needs real mode: CURSOR_API_KEY set. Optional env: `CURSOR_BASE` repoints the
+client (tests use a local mock), `CURSOR_POLL_MS` sets the poll cadence in ms
+(default 15000), `CURSOR_POLL_DEADLINE_MS` caps how long a run is polled
+(default 30 min).
+
+- [ ] `curl localhost:4173/api/health` shows `"cursor":"real"`
+- [ ] Dispatching a mapped cause returns 201 with `"agent":"cursor"`; the task
+      log shows the agent + run ids and the task moves to Working
+- [ ] When the run reports FINISHED with a PR: task moves to Verifying with
+      `pr.num`/`pr.url`, a PR record appears in `/api/state` `prs` (state
+      "open", negative `verification.expected`), and the cause status becomes
+      "pr"
+- [ ] When the run reports FINISHED without a PR: task stays in Verifying with
+      no PR record; the task log flags the missing PR for a human
+- [ ] Restarting the server resumes polling for in-flight cursor tasks
+      (task log shows "resuming poll"); queued cursor tasks without an agentId
+      are failed with "orphaned by restart - re-dispatch"
+- [ ] A run that never turns terminal fails at the poll deadline; 10 consecutive
+      poll errors fail the task with the last error in the log
+- [ ] Demo mode unchanged: without CURSOR_API_KEY, dispatch still runs the
+      scripted demo simulation
+- [ ] `node --test` passes (includes tests/m2.test.mjs, which drives dispatch
+      against a mock Cursor server via CURSOR_BASE)
+
 ## Repo layout
 
 ```
@@ -185,7 +214,7 @@ server/
   orchestrator.mjs  task lifecycle, real scan pipeline, demo simulation loop
 integrations/
   aqa.mjs           AQA v3.1 client (ported, + unverified results endpoints)
-  cursor.mjs        Cursor Background Agents client (unverified contract)
+  cursor.mjs        Cursor Cloud Agents client (v1, validated against office org)
 web/
   index.html  app.css  app.js    the 7-screen SPA, hash routing, polls /api/state
 data/

@@ -10,6 +10,7 @@ import { hydrateSite, mergeCauses, diffCauses } from './aqa-sync.mjs';
 
 const DEMO_STAGE_MS = 5000;
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
+const CURSOR_MAX_POLL_ERRORS = 10;
 
 export function dispatchTask(cause, site) {
   const task = {
@@ -48,33 +49,88 @@ async function launchReal(task, cause, site) {
 }
 
 function pollReal(taskId) {
+  const pollMs = Number(process.env.CURSOR_POLL_MS) || 15000;
+  const deadlineMs = Number(process.env.CURSOR_POLL_DEADLINE_MS) || 30 * 60 * 1000;
+  const deadline = Date.now() + deadlineMs;
+  let pollErrors = 0;
   const timer = setInterval(async () => {
     const t = getState().tasks.find((x) => x.id === taskId);
     if (!t || t.state === 'done' || t.state === 'failed') return clearInterval(timer);
     if (!t.agentId || !t.runId) return;
+    if (Date.now() >= deadline) {
+      clearInterval(timer);
+      return failTask(taskId, `cursor run not terminal after ${Math.round(deadlineMs / 60000)} min - poll deadline expired`);
+    }
     try {
       const run = await cursor.getRun(t.agentId, t.runId);
+      pollErrors = 0;
       const status = (run.status || '').toUpperCase();
       if (status === 'FINISHED') {
         clearInterval(timer);
-        const prUrl = run.git?.branches?.find((b) => b.prUrl)?.prUrl || null;
-        update((s) => {
-          const task = s.tasks.find((x) => x.id === taskId);
-          if (!task) return;
-          task.state = 'verifying';
-          task.pr = prUrl ? { url: prUrl, num: prUrl.split('/').pop() } : null;
-        });
-        addLog(taskId, `agent finished, PR: ${prUrl || 'none reported'}`);
-        // M4: verification re-run happens on merge webhook; until then task parks
-        // in "verifying" for human review.
+        finishReal(taskId, run);
       } else if (['ERROR', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(status)) {
         clearInterval(timer);
         failTask(taskId, `cursor run reported ${status}`);
       }
     } catch (err) {
-      addLog(taskId, `poll error: ${err.message}`);
+      pollErrors += 1;
+      addLog(taskId, `poll error (${pollErrors}/${CURSOR_MAX_POLL_ERRORS}): ${err.message}`);
+      if (pollErrors >= CURSOR_MAX_POLL_ERRORS) {
+        clearInterval(timer);
+        failTask(taskId, `${CURSOR_MAX_POLL_ERRORS} consecutive poll errors, last: ${err.message}`);
+      }
     }
-  }, 15000);
+  }, pollMs);
+}
+
+// Agent run reached FINISHED: park the task in "verifying" and, when a PR was
+// opened, record it in state.prs (same shape as the demo path).
+// M4: verification re-run happens on merge webhook; until then task parks
+// in "verifying" for human review.
+function finishReal(taskId, run) {
+  const prUrl = run.git?.branches?.find((b) => b.prUrl)?.prUrl || null;
+  update((s) => {
+    const task = s.tasks.find((x) => x.id === taskId);
+    if (!task) return;
+    task.state = 'verifying';
+    if (!prUrl) {
+      task.pr = null;
+      task.log.push(line('agent finished without reporting a PR - needs a human look'));
+      return;
+    }
+    const num = prUrl.split('/').pop();
+    task.pr = { url: prUrl, num };
+    task.log.push(line(`agent finished, PR: ${prUrl}`));
+    const cause = s.causes.find((c) => c.id === task.causeId);
+    s.prs.unshift({
+      num,
+      url: prUrl,
+      taskId: task.id,
+      siteId: task.siteId,
+      title: `fix(a11y): ${task.title.toLowerCase()}`,
+      state: 'open',
+      rule: cause?.rule,
+      evidence: cause?.evidence,
+      instances: cause?.instances,
+      pages: cause?.pages,
+      file: task.file,
+      verification: { expected: -(cause?.instances || 0), actual: null },
+    });
+    if (cause) cause.status = 'pr';
+    s.activity.unshift({ ts: Date.now(), msg: `Cursor agent opened PR #${num} for task ${task.id}` });
+  });
+}
+
+// Restart recovery: poll timers live in memory, so a process restart strands
+// in-flight cursor tasks. Called once from index.mjs after the server starts.
+export function resumePolling() {
+  for (const t of getState().tasks) {
+    if (t.agent !== 'cursor' || !['queued', 'working'].includes(t.state)) continue;
+    if (!t.agentId) { failTask(t.id, 'orphaned by restart - re-dispatch'); continue; }
+    if (!cursor.isReal) { failTask(t.id, 'CURSOR_API_KEY missing after restart - re-dispatch'); continue; }
+    addLog(t.id, `resuming poll for cursor agent ${t.agentId} after restart`);
+    pollReal(t.id);
+  }
 }
 
 function failTask(taskId, reason) {

@@ -10,6 +10,7 @@ import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
 import { bootstrapFleet, usesRealFleet, getState } from './store.mjs';
 import { hasFleetConfig } from './bootstrap.mjs';
+import { resumePolling } from './orchestrator.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(__dirname, '..', 'web');
@@ -75,6 +76,7 @@ async function start() {
     console.log(`  http://localhost:${PORT}`);
     console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode'}`);
     console.log(`  Cursor: ${cursor.isReal ? 'REAL' : 'demo mode'}`);
+    resumePolling();
   });
 }
 
