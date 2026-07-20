@@ -1,7 +1,9 @@
 // API handlers. All JSON in/out. Router in index.mjs calls handle(req, res, url).
 
+import { existsSync } from 'node:fs';
 import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
 import { dispatchTask, demoScan, startRealScan } from './orchestrator.mjs';
+import { buildIndex, mapCause } from './mapper.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
 
@@ -28,6 +30,7 @@ export async function handle(req, res, url) {
     const site = {
       id: nextId('site-'),
       url: String(body.url), repo: String(body.repo), suiteId: String(body.suiteId),
+      repoPath: body.repoPath ? String(body.repoPath) : null,
       status: 'onboarding', critical: 0, total: 0, trend: [], lastRun: null,
       framework: body.framework || 'unknown',
       flows: [],
@@ -52,6 +55,41 @@ export async function handle(req, res, url) {
     }
     demoScan(site);
     return json(res, 202, { ok: true, mode: 'demo' });
+  }
+
+  // M3: rebuild the source index and remap every open cause of the site.
+  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/remap$/))) {
+    const site = getState().sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    if (!site.repoPath) return json(res, 400, { error: 'site has no repoPath; set one to enable source mapping' });
+    if (!existsSync(site.repoPath)) return json(res, 400, { error: `repoPath does not exist: ${site.repoPath}` });
+    const index = buildIndex(site.repoPath);
+    let mapped = 0;
+    let unmapped = 0;
+    update((s) => {
+      for (const cause of s.causes) {
+        if (cause.siteId !== site.id || cause.status !== 'open') continue;
+        cause.mappedFile = mapCause(cause, index) || cause.mappedFile || null;
+        if (cause.mappedFile) mapped += 1; else unmapped += 1;
+      }
+      s.activity.unshift({ ts: Date.now(), msg: `Remapped ${site.url}: ${mapped} mapped, ${unmapped} unmapped` });
+    });
+    return json(res, 200, { mapped, unmapped });
+  }
+
+  // M3: unmapped open causes export as a fix-report.md handoff for humans.
+  if (method === 'GET' && (m = path.match(/^\/api\/sites\/([\w-]+)\/fix-report$/))) {
+    const s = getState();
+    const site = s.sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    const causes = s.causes.filter((c) => c.siteId === site.id && c.status === 'open' && !c.mappedFile);
+    const body = fixReport(site, causes);
+    res.writeHead(200, {
+      'content-type': 'text/markdown; charset=utf-8',
+      'content-disposition': `attachment; filename="fix-report-${site.id}.md"`,
+      'content-length': Buffer.byteLength(body),
+    });
+    return res.end(body);
   }
 
   if (method === 'POST' && (m = path.match(/^\/api\/causes\/([\w-]+)\/dispatch$/))) {
@@ -86,6 +124,49 @@ export async function handle(req, res, url) {
   }
 
   return json(res, 404, { error: 'not found' });
+}
+
+// Suggested manual actions per AQA rule, used by the fix-report export.
+const RULE_ACTIONS = {
+  'image-alt': 'Add descriptive alt text to the image (or alt="" if purely decorative).',
+  'link-name': 'Give the link a discernible name: visible text, aria-label, or a visually hidden span.',
+  'color-contrast': 'Raise the text/background contrast ratio to at least 4.5:1 (3:1 for large text).',
+  'frame-title': 'Add a title attribute to the iframe that describes its content.',
+  'label': 'Associate a label with the form control via label[for], aria-label, or aria-labelledby.',
+  'heading-order': 'Restructure headings so levels increase one step at a time without skipping.',
+};
+
+const DEFAULT_ACTION = 'Review the flagged element against the rule and patch the owning component or template.';
+
+function fixReport(site, causes) {
+  const lines = [
+    `# Fix report - ${site.url}`,
+    '',
+    `- Site: ${site.url}`,
+    `- Suite: ${site.suiteId}`,
+    `- Generated: ${new Date().toISOString()}`,
+    `- Unmapped open causes: ${causes.length}`,
+    '',
+    'These root causes could not be mapped to a source file (vendor embeds, CMS',
+    'content, or code outside the indexed repo), so no fix task was dispatched.',
+    'Hand this report to the owning team.',
+    '',
+  ];
+  if (!causes.length) lines.push('Nothing to hand off - every open cause is mapped to a source file.', '');
+  for (const c of causes) {
+    lines.push(
+      `## ${c.title}`,
+      '',
+      `- Rule: ${c.rule} (${c.ruleId})`,
+      `- Severity: ${c.severity}`,
+      `- Instances: ${c.instances}`,
+      `- Pages: ${(c.pages || []).join(', ') || '-'}`,
+      `- Evidence: \`${c.evidence || '-'}\``,
+      `- Suggested action: ${RULE_ACTIONS[c.ruleId] || DEFAULT_ACTION}`,
+      '',
+    );
+  }
+  return lines.join('\n');
 }
 
 function publicState() {

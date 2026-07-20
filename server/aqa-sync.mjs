@@ -2,7 +2,9 @@
 // by root cause. Used by bootstrap.mjs (startup fleet load) and orchestrator.mjs
 // (rescan pipeline) so both paths produce identical site/cause shapes.
 
+import { existsSync } from 'node:fs';
 import * as aqa from '../integrations/aqa.mjs';
+import { buildIndex, mapCause } from './mapper.mjs';
 
 export async function hydrateSite(cfg) {
   const suite = await aqa.suiteGet(cfg.suiteId);
@@ -74,11 +76,26 @@ export async function hydrateSite(cfg) {
   const issues = latestRun ? await collectIssues(latestRun.id, suite, test) : [];
   const grouped = groupIssues(issues, cfg.id);
 
+  // Root-cause mapper (M3): when the site has a local clone of its frontend
+  // repo, index it once per hydration and map each cause to a file:line.
+  // Missing/nonexistent repoPath is not an error - causes stay unmapped.
+  if (cfg.repoPath && existsSync(cfg.repoPath)) {
+    try {
+      const index = buildIndex(cfg.repoPath);
+      for (const cause of grouped) {
+        if (!cause.mappedFile) cause.mappedFile = mapCause(cause, index);
+      }
+    } catch (err) {
+      console.error(`aqa-sync: mapping failed for ${cfg.id}:`, err.message);
+    }
+  }
+
   return {
     site: {
       id: cfg.id,
       url: cfg.url || guessUrl(suite, flows),
       repo: cfg.repo,
+      repoPath: cfg.repoPath || null,
       suiteId: cfg.suiteId,
       testId: cfg.testId || test?.definition?.id || null,
       status: siteStatus(critical, total, flows.length),
@@ -119,10 +136,23 @@ async function collectIssues(runId, suite, test) {
   return issues;
 }
 
+// Normalize a CSS selector for grouping: strip positional pseudo-classes
+// (:nth-child(n), :nth-of-type(n)), trailing "> *" chains, and collapse
+// whitespace - so the same component rendered on different pages (or at
+// different list positions) groups into one root cause.
+export function normalizeSelector(selector) {
+  const normalized = String(selector || '')
+    .replace(/:nth-(?:child|of-type)\([^)]*\)/g, '')
+    .replace(/(\s*>\s*\*)+\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized || 'unknown';
+}
+
 function groupIssues(issues, siteId) {
   const groups = new Map();
   for (const issue of issues) {
-    const selector = issue.selectors?.[0] || issue.solutionId || 'unknown';
+    const selector = normalizeSelector(issue.selectors?.[0] || issue.solutionId || 'unknown');
     const key = `${issue.ruleId}|${selector}`;
     if (!groups.has(key)) {
       groups.set(key, {
@@ -170,7 +200,9 @@ export function mergeCauses(prevCauses, nextCauses) {
     const prev = prevByKey.get(causeKey(next));
     if (prev && !claimed.has(prev.id)) {
       claimed.add(prev.id);
-      return { ...next, id: prev.id, status: prev.status, mappedFile: prev.mappedFile };
+      // A mappedFile that survived a merge is never overwritten; a previously
+      // unmapped cause may pick up a fresh mapping from the new hydration.
+      return { ...next, id: prev.id, status: prev.status, mappedFile: prev.mappedFile ?? next.mappedFile };
     }
     return { ...next };
   });

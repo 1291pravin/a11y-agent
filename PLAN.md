@@ -69,11 +69,18 @@ agent loop. No external credentials needed. This is what the office pulls and te
       (poll every CURSOR_POLL_MS with a CURSOR_POLL_DEADLINE_MS cap, PR record
       mirrors the demo shape, polling resumes across restarts)
 
-### M3 - Root-cause mapper
+### M3 - Root-cause mapper  [DONE]
 
-- [ ] Selector-to-source index built during repo scout
-- [ ] Grouping heuristics (same rule + same selector pattern = one cause)
-- [ ] Unmapped causes export as fix-report.md instead of dispatching
+- [x] Selector-to-source index built during repo scout (server/mapper.mjs:
+      sites take an optional `repoPath` to a local clone; hydration indexes
+      class/id/data-testid/aria-label/component tokens and maps each cause to
+      a file:line; POST /api/sites/:id/remap rebuilds the index on demand)
+- [x] Grouping heuristics (same rule + same selector pattern = one cause;
+      selectors are normalized - :nth-child/:nth-of-type and trailing "> *"
+      chains stripped - so one component across pages groups once)
+- [x] Unmapped causes export as fix-report.md instead of dispatching
+      (GET /api/sites/:id/fix-report, markdown download with per-rule
+      suggested actions; wired to the "Export report" button)
 
 ### M4 - Verification loop
 
@@ -202,6 +209,27 @@ client (tests use a local mock), `CURSOR_POLL_MS` sets the poll cadence in ms
 - [ ] `node --test` passes (includes tests/m2.test.mjs, which drives dispatch
       against a mock Cursor server via CURSOR_BASE)
 
+## Verification checklist (M3)
+
+Mapping needs a site with a `repoPath` pointing at a local clone of its
+frontend repo (set it in the onboard POST body or as `repoPath` in a
+FLEET_SITES entry). The fix-report works in any mode.
+
+- [ ] `curl -OJ localhost:4173/api/sites/site-demo/fix-report` downloads
+      `fix-report-site-demo.md` (text/markdown) listing only unmapped open
+      causes, each with a "Suggested action" line
+- [ ] The "Export report" button on an unmapped cause downloads the same file
+- [ ] `curl -X POST localhost:4173/api/sites/site-demo/remap` returns 400
+      (no repoPath on the demo site)
+- [ ] Onboard a site with `"repoPath": "C:/path/to/clone"`, then
+      `curl -X POST localhost:4173/api/sites/<siteId>/remap` returns 200
+      `{"mapped":N,"unmapped":M}` and mapped causes show a file:line in the
+      triage screen with a "Dispatch fix task" button
+- [ ] After a rescan, causes mapped in the previous round keep their
+      mappedFile (mergeCauses never overwrites a surviving mapping)
+- [ ] `node --test` passes (includes tests/m3.test.mjs: normalizeSelector and
+      mapper unit tests against a fixture repo, plus the fix-report endpoint)
+
 ## Repo layout
 
 ```
@@ -211,6 +239,7 @@ server/
   store.mjs         JSON store, seed data, persistence
   bootstrap.mjs     fleet config + startup hydration from AQA
   aqa-sync.mjs      shared AQA hydration, cause grouping, merge + run diffing
+  mapper.mjs        selector-to-source index + cause mapping (M3)
   orchestrator.mjs  task lifecycle, real scan pipeline, demo simulation loop
 integrations/
   aqa.mjs           AQA v3.1 client (ported, + unverified results endpoints)

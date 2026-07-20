@@ -71,6 +71,7 @@ function defaultFleetFromEnv() {
       suiteId: process.env.FILORGA_FR_SUITE_ID || 'TS31223',
       testId: process.env.FILORGA_FR_TEST_ID || process.env.AQA_TEST_ID || null,
       framework: process.env.FILORGA_FR_FRAMEWORK || 'Shopify + Vue 3',
+      repoPath: process.env.FILORGA_FR_REPO_PATH || null,
     });
   }
   if (process.env.FILORGA_EU_SUITE_ID) {
@@ -81,6 +82,7 @@ function defaultFleetFromEnv() {
       suiteId: process.env.FILORGA_EU_SUITE_ID || 'TS24575',
       testId: process.env.FILORGA_EU_TEST_ID || 'A206322-0',
       framework: process.env.FILORGA_EU_FRAMEWORK || 'Shopify + Vue 3',
+      repoPath: process.env.FILORGA_EU_REPO_PATH || null,
     });
   }
   return sites;

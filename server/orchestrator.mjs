@@ -240,6 +240,7 @@ async function runRealScan(siteId) {
     id: site.id,
     url: site.url,
     repo: site.repo,
+    repoPath: site.repoPath,
     suiteId: site.suiteId,
     testId: site.testId,
     framework: site.framework,

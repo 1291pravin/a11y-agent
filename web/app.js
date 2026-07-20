@@ -315,7 +315,7 @@ function causeAction(c) {
   if (c.status === 'open' && c.mappedFile)
     return `<button class="btn small" data-act="dispatch" data-id="${c.id}">Dispatch fix task</button>`;
   if (c.status === 'open')
-    return `<button class="btn ghost small" data-act="export" data-id="${c.id}">Export report</button>`;
+    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Downloads fix-report.md covering all unmapped open causes for this site">Export report</button>`;
   if (c.status === 'task') {
     const t = S.tasks.find((x) => x.causeId === c.id);
     return `<span class="chip run">task ${t ? t.state : 'running'}</span>`;
@@ -367,7 +367,15 @@ function bindActions() {
       try {
         if (act === 'dispatch') await api('POST', `/api/causes/${id}/dispatch`);
         if (act === 'scan') await api('POST', `/api/sites/${id}/scan`);
-        if (act === 'export') alert('Report export lands in M3. For now: cause details are in /api/state.');
+        if (act === 'export') {
+          const cause = S.causes.find((c) => c.id === id);
+          if (cause) {
+            const a = document.createElement('a');
+            a.href = `/api/sites/${encodeURIComponent(cause.siteId)}/fix-report`;
+            a.download = `fix-report-${cause.siteId}.md`;
+            a.click();
+          }
+        }
         await refresh();
       } catch (err) {
         alert(err.message);
