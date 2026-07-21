@@ -54,6 +54,7 @@ export async function bootstrapFromAqa() {
     counter: 1000,
     settings: structuredClone(DEFAULT_SETTINGS),
     sites,
+    journeys: [],
     causes,
     tasks: [],
     prs: [],
@@ -92,6 +93,7 @@ export function demoSeed() {
   return {
     counter: 1000,
     settings: structuredClone(DEFAULT_SETTINGS),
+    journeys: [],
     sites: [
       {
         id: 'site-demo',

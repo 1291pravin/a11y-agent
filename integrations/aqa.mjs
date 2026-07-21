@@ -95,6 +95,26 @@ export async function runIssues(runId, flowId) {
   return req('GET', `/a11y/tests/runs/${runId}/flows/${flowId}/issues`);
 }
 
+// Stateless DOM scoring. Every other call here names a resource AQA already
+// owns; this one hands AQA a DOM we captured ourselves. AQA never fetches
+// pageUrl - it is a label carried into the response - so this is the only path
+// that can score localhost, preview builds, and pages behind a login.
+//
+// KNOWN AMBIGUITY, unverified against a live key: the OpenAPI schema defines
+// the properties as `pageUrl`/`rulesetId` but its `required` array spells them
+// `pageurl`/`rulesetid`. Only one spelling can be the one the server parses.
+// We send camelCase, matching the property definitions and the endpoint's own
+// prose. If a live call rejects this with a missing-parameter error, try the
+// lowercase spelling before looking anywhere else. Tracked in PLAN.md under
+// "Verification checklist (evaluate + journey runner)".
+export async function evaluate({ rulesetId, pageUrl, code, context, manual = false }) {
+  assertReal();
+  const body = { rulesetId, pageUrl, code, manual: Boolean(manual) };
+  // context scopes scoring to a subtree; omitted entirely rather than sent empty.
+  if (context) body.context = context;
+  return req('POST', '/a11y/tests/evaluate', body, { form: true });
+}
+
 export async function runFlowIssues(runId, flowId, { stepIndex = 0, changeIndex = -1, manual = false } = {}) {
   assertReal();
   const q = new URLSearchParams({

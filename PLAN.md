@@ -125,6 +125,38 @@ real mode.
       AQA_MAX_RPM per AQA_RATE_WINDOW_MS, default 60/min, covering polling
       and retries; exhausted callers wait for a free slot)
 
+### Evaluate path - journeys + runner  [BACKEND DONE, UNVERIFIED AGAINST A LIVE KEY]
+
+The suite path above is remote: AQA's infrastructure fetches the page, so it can only
+reach what is publicly routable. AQA also exposes a stateless endpoint that scores a
+DOM snapshot you supply, which inverts who fetches the page - our browser navigates,
+and only the resulting DOM travels. Same rule engine, so the results are directly
+comparable to a suite run.
+
+This SUPPLEMENTS the suite path and never replaces it. The AQA suite stays the
+compliance system of record; a site may have a `suiteId`, a journey, or both. A
+journey run only ever writes causes tagged with its own `journeyId`.
+
+- [x] `evaluate()` in the AQA client (POST /a11y/tests/evaluate, form-encoded,
+      through the same `req()` helper so auth, 429/5xx retry and the `AQA_MAX_RPM`
+      budget all apply)
+- [x] Journey model: an ordered step list per site, `goto | click | fill | hover |
+      waitFor | snapshot`; snapshot steps carry a label plus optional `rulesetId`
+      and `context` overrides; any step may be `optional: true`. Persisted through
+      store.mjs on both backends, CRUD under /api/journeys with the ADMIN_TOKEN rule
+- [x] Runner (runner/): a SEPARATE process that owns Chromium, walks the steps,
+      injects the vendor analyzer, calls `_aqaProcessDOM()` at each snapshot and
+      POSTs to evaluate. The control plane reaches it over HTTP at `RUNNER_URL`, so
+      server/ and integrations/ keep design rule 5 (zero runtime deps) and Playwright
+      stays a devDependency
+- [x] Adapter: evaluate issues are fed through the EXISTING `groupIssues()` /
+      `mergeCauses()` / `diffCauses()`, with the snapshot label standing in for
+      `flowName`. Reshaping lives in one function (`evaluateIssuesToRaw`)
+- [ ] Confirmed against a live AQA key - see the checklist below. Until that is
+      run, treat this path as unproven: the mock was written from the vendored spec,
+      so a spec that misdescribes the API produces a mock that reproduces the same
+      misreading with the tests still passing
+
 ## How to run (office test)
 
 ```sh
@@ -352,6 +384,104 @@ Rate budget:
 - [ ] `node --test` passes (includes tests/m5.test.mjs: auth, CSV batch,
       limiter, slotFor, and a sqlite restart test that skips on Node < 22.5)
 
+## Verification checklist (evaluate + journey runner)
+
+**This checklist is the only thing standing between this path and a wrong contract.**
+Steps 1-5 of the evaluate work are verified against `tests/journey.test.mjs`, whose
+mock evaluate server was written from the vendored OpenAPI at
+`aqa-usablenet-helper/skills/aqa-cover/resources/aqa-openapi.json`. If the live API
+disagrees with that spec, the mock reproduces the same misreading and the tests still
+pass. Only a human with a live key can catch that.
+
+Needs real mode: `AQA_TEAMSLUG` + `AQA_API_KEY`, a valid `rulesetId` from
+`GET /a11y/tests/rulesets`, and Chromium (`npm install && npx playwright install
+chromium`). Start both processes: `npm start` and, in a second shell, `npm run runner`.
+Optional env: `RUNNER_URL`, `RUNNER_PORT`, `RUNNER_HOST`, `RUNNER_TIMEOUT_MS`,
+`RUNNER_STEP_TIMEOUT_MS`, `AQA_ANALYZER_URL`.
+
+Wiring:
+
+- [ ] `curl localhost:4173/api/runner/health` returns `{"ok":true}` with the runner
+      reporting `"aqa":"real"`; with the runner stopped it returns `{"ok":false}` and
+      an error rather than hanging
+- [ ] Create a journey against a public page and run it:
+
+  ```sh
+  curl -X POST localhost:4173/api/journeys -H 'content-type: application/json' -d '{
+    "siteId":"<siteId>","name":"smoke","rulesetId":"<rulesetId>",
+    "startUrl":"https://example.com/",
+    "steps":[{"type":"snapshot","label":"home"}]}'
+  curl -X POST localhost:4173/api/journeys/<journeyId>/run
+  ```
+
+  returns 202, and `/api/state` shows `runState:"running"` then a populated `lastRun`
+
+**The camelCase question (the highest-risk item).** The spec defines the request
+properties as `pageUrl` / `rulesetId` but its `required` array spells them `pageurl` /
+`rulesetid`. Only one can be what the server actually parses. The client sends
+camelCase (see the comment on `evaluate()` in integrations/aqa.mjs).
+
+- [ ] The smoke journey above returns issues rather than a 4xx. If it fails with a
+      missing-parameter error, switch the two keys in `evaluate()` to lowercase and
+      confirm that fixes it - then record which spelling won here, and fix the mock
+      in tests/journey.test.mjs to match so it stays honest
+- [ ] Confirm `pageUrl` really is a label only: pass a `pageUrl` that does not resolve
+      (for example `https://localhost.invalid/checkout`) while the `code` is a real
+      snapshot, and check the issues come back scored against the snapshot. If AQA
+      instead tries to fetch that URL, the whole premise of this path is wrong
+
+**The response shape.** The mock returns issues shaped like the spec's own example:
+`ruleId, solutionId, selectors[], ruleShortTitle, ruleTitle, needFixTitle, tagName,
+properties[]`. `groupIssues()` reads exactly those.
+
+- [ ] Dump one real response (`node -e` against `evaluate()`, or the runner log) and
+      compare field by field with the mock in tests/journey.test.mjs. Names, not just
+      presence: a `selector` string where we expect a `selectors` array silently
+      collapses every cause into one bucket
+- [ ] `properties[]` really carries the impact tags `high` / `medium` / low that
+      `mapSeverity()` maps to critical / serious / minor. If real responses only carry
+      `"needs fix"` / `"check manually"` and no impact tag, every cause lands as minor
+- [ ] Root causes appear in `/api/state` with sane `instances`, `pages` (snapshot
+      labels) and `severity`, and the site's suite causes are still there untouched
+- [ ] `descriptions[issue.ruleId][issue.solutionId]` resolves as the spec claims (we
+      do not consume it yet; confirming it now is what makes it usable later)
+
+**`context` scoping.**
+
+- [ ] Run the same journey twice, once with `"context":"<a real container selector>"`
+      on the snapshot step and once without. The scoped run should return a subset:
+      issues from inside that subtree only. If `context` is ignored, the two runs come
+      back identical and the field is unusable
+- [ ] A `context` selector that matches nothing returns an empty or error result
+      rather than silently scoring the whole page
+
+**Runner behavior against a real site.**
+
+- [ ] The vendor analyzer injects cleanly (`AQA_ANALYZER_URL` default) on a real page
+      with a strict CSP. If `addScriptTag` is blocked by CSP, fall back to the
+      `window.eval(response)` form the spec documents
+- [ ] Snapshot `bytes` in `lastRun` is plausible for the page (a few hundred KB, not a
+      few hundred bytes - a tiny snapshot means the analyzer ran before the app rendered)
+- [ ] A journey through a login returns issues for a page the suite path cannot reach.
+      This is the whole point of the path; if it does not work, nothing else matters
+- [ ] An `optional: true` cookie-banner click is reported `"skipped"` on a session
+      where the banner does not appear, and the run still completes
+- [ ] A non-optional selector miss fails the run, `lastRun.ok` is false, and the
+      journey's previous causes are unchanged (a partial walk must never read as
+      "the rest got fixed")
+- [ ] Rate budget: the runner is a separate process, so it carries its OWN
+      `AQA_MAX_RPM` window. Confirm a long journey plus a concurrent suite scan stays
+      inside the account's real limit, or set `AQA_MAX_RPM` lower in both processes
+
+**Still open from M1** (unchanged by this work, still needs the same live pass):
+
+- [ ] `testRun` response shape: does it return the new run id, and under which key
+      (`id`, `runId`, `run.id`)? `startRun()` in orchestrator.mjs guesses all three and
+      falls back to the newest run on the test
+- [ ] `runGet` response shape: which field carries status (`status` or `state`) and
+      what are the real terminal values? `waitForRun()` accepts finished/completed/
+      done/success/succeeded and error/failed/failure/cancelled/canceled
+
 ## Repo layout
 
 ```
@@ -360,12 +490,18 @@ server/
   routes.mjs        API handlers (M5: admin-token auth, CSV batch onboarding)
   store.mjs         state store: sqlite (node:sqlite) or JSON file backend (M5)
   bootstrap.mjs     fleet config + startup hydration from AQA
-  aqa-sync.mjs      shared AQA hydration, cause grouping, merge + run diffing
+  aqa-sync.mjs      shared AQA hydration, cause grouping, merge + run diffing,
+                    evaluate -> cause adapter
+  journey-model.mjs journey + step validation (pure)
+  journeys.mjs      journey storage, runner client, journey run pipeline
   mapper.mjs        selector-to-source index + cause mapping (M3)
   scheduler.mjs     staggered weekly scan slots + tick loop (M5)
   orchestrator.mjs  task lifecycle, real scan pipeline, demo simulation loop
+runner/             SEPARATE process - the only place Playwright is imported
+  index.mjs         HTTP wrapper the control plane calls (RUNNER_PORT, default 4174)
+  journey-run.mjs   Chromium walk, analyzer injection, evaluate per snapshot
 integrations/
-  aqa.mjs           AQA v3.1 client (+ global rate budget, M5)
+  aqa.mjs           AQA v3.1 client (+ global rate budget M5, + evaluate)
   cursor.mjs        Cursor Cloud Agents client (v1, validated against office org)
 web/
   index.html  app.css  app.js    the 7-screen SPA, hash routing, polls /api/state
