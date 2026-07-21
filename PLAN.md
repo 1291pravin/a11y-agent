@@ -352,6 +352,66 @@ Rate budget:
 - [ ] `node --test` passes (includes tests/m5.test.mjs: auth, CSV batch,
       limiter, slotFor, and a sqlite restart test that skips on Node < 22.5)
 
+## Verification checklist (loading + feedback states)
+
+Works entirely in demo mode. Optional env: `DEMO_SCAN_MS` sets the demo scan
+duration (default 2000).
+
+Before this pass the app had no loading affordance at all: no spinner, skeleton,
+progress or toast class existed anywhere in `web/app.css`.
+
+Scan progress:
+
+- [ ] Click "Run tests" on a site: the button becomes a disabled "Scanning…"
+      with a spinner, and a progress panel appears above the KPI cards naming
+      the current stage ("Requesting a run from AQA" -> "Waiting for AQA to
+      finish the run" -> "Collecting issues and regrouping causes")
+- [ ] The panel shows elapsed time, the timeout budget, and the AQA run id once
+      known. The bar is a full-width barber pole, never a partial fill - AQA
+      reports no percentage, so no percentage is implied
+- [ ] The busy button survives the 3s poll re-render (it is derived from
+      `site.scanState`, not a local flag)
+- [ ] A second `POST /api/sites/:id/scan` while one is running returns 409 in
+      demo mode as well as real mode
+- [ ] When the scan lands the panel disappears, the button returns to "Run
+      tests", and the last-scan diff line reappears
+- [ ] A failed real scan leaves `site.scanError` and renders it under the title
+
+First load and polling:
+
+- [ ] A cold load shows a skeleton matching the dashboard layout, never a blank
+      pane; `#main` carries `aria-busy` while it is in place
+- [ ] Killing the server mid-session keeps the last good data on screen and
+      raises a banner naming the failure and the retry interval; the poll backs
+      off 3s -> 6s -> 12s -> 30s and recovers on its own
+- [ ] Switching to another browser tab stops the poll; returning resumes it
+      immediately at the base interval
+
+Errors and credentials:
+
+- [ ] Every failing action raises a dismissible toast, not `alert()`. Errors use
+      `role="alert"` and never auto-dismiss; confirmations use `role="status"`
+      and clear after 6s
+- [ ] With `ADMIN_TOKEN` set, the first write action opens an in-page dialog
+      (not `window.prompt`), traps Escape/Enter, and restores focus on close
+
+Accessibility:
+
+- [ ] `#main` no longer carries `aria-live` - it used to, and since the poll
+      replaces the pane wholesale, screen readers re-announced the entire page
+      every 3 seconds
+- [ ] `#announcer`, `#toasts` and `#conn-banner` live outside `#main` so the
+      poll cannot destroy them; the announcer fires on transitions only
+- [ ] Keyboard focus survives the poll re-render (focus a button, wait 5s, it is
+      still focused)
+- [ ] With reduced motion the spinner, skeleton and barber pole degrade to
+      static but still visible states, not invisible ones
+- [ ] `npm run test:e2e` passes (includes tests/e2e/feedback.spec.mjs)
+
+Note: `playwright.config.mjs` now ignores `demo-video.spec.mjs`, which belongs to
+`playwright.demo.config.mjs` - it needs its own server, a synced fleet and a 120s
+timeout, so it could never pass in the default run and failed it every time.
+
 ## Repo layout
 
 ```

@@ -208,24 +208,57 @@ setInterval(() => {
 export function startRealScan(siteId) {
   update((s) => {
     const site = s.sites.find((x) => x.id === siteId);
-    if (site) site.scanState = 'running';
+    if (site) {
+      site.scanState = 'running';
+      // Progress facts for the UI. AQA reports no percentage, so the webapp shows
+      // elapsed against this deadline plus the current stage - never a fabricated bar.
+      site.scanStartedAt = Date.now();
+      site.scanDeadlineAt = Date.now() + SCAN_TIMEOUT_MS;
+      site.scanStage = 'starting';
+      site.scanRunId = null;
+      site.scanError = null;
+    }
     s.activity.unshift({ ts: Date.now(), msg: `AQA scan started for ${site?.url || siteId}` });
   });
   return runRealScan(siteId).then(() => true).catch((err) => {
     update((s) => {
       const site = s.sites.find((x) => x.id === siteId);
-      if (site) site.scanState = null;
+      if (site) {
+        clearScanProgress(site);
+        site.scanError = err.message;
+      }
       s.activity.unshift({ ts: Date.now(), msg: `AQA scan failed for ${site?.url || siteId}: ${err.message}` });
     });
     return false;
   });
 }
 
+// Scan progress bookkeeping lives in one place so every exit path clears the
+// same fields; a stale scanState leaves the UI showing a spinner forever.
+function setScanStage(siteId, stage, patch = {}) {
+  update((s) => {
+    const site = s.sites.find((x) => x.id === siteId);
+    if (!site || site.scanState !== 'running') return;
+    site.scanStage = stage;
+    Object.assign(site, patch);
+  });
+}
+
+function clearScanProgress(site) {
+  site.scanState = null;
+  site.scanStartedAt = null;
+  site.scanDeadlineAt = null;
+  site.scanStage = null;
+  site.scanRunId = null;
+}
+
 async function runRealScan(siteId) {
   const site = getState().sites.find((x) => x.id === siteId);
   if (!site) throw new Error('site not found');
   const runId = await startRun(site.testId);
+  setScanStage(siteId, 'polling', { scanRunId: runId });
   await waitForRun(runId);
+  setScanStage(siteId, 'collecting');
 
   const hydrated = await hydrateSite({
     id: site.id,
@@ -245,7 +278,8 @@ async function runRealScan(siteId) {
     const causes = mergeCauses(prevCauses, hydrated.causes);
     const next = hydrated.site;
     next.trend = [...(prev.trend || []), next.total].slice(-12);
-    next.scanState = null;
+    clearScanProgress(next);
+    next.scanError = null;
     next.lastDiff = diffCauses(prevCauses, causes);
     s.sites[idx] = next;
     s.causes = s.causes.filter((c) => c.siteId !== siteId).concat(causes);
@@ -370,16 +404,38 @@ function settleVerification(prRef, causeId, before, after, realScan) {
   });
 }
 
-// Demo scan: fabricate a completed run for a site (used by "Run tests" button).
+// Demo scan: fabricate a run for a site (used by "Run tests" button).
+// Staged rather than instant so demo mode exercises the same scanState/scanStage
+// rendering as real mode - the same reasoning M4 applied to the verification loop.
+const DEMO_SCAN_MS = Number(process.env.DEMO_SCAN_MS) || 2000;
+
 export function demoScan(site) {
   update((s) => {
     const target = s.sites.find((x) => x.id === site.id);
     if (!target) return;
-    target.lastRun = 'just now';
-    for (const f of target.flows) {
-      if (f.type === 'Skipped') continue;
-      f.delta = '0';
-    }
-    s.activity.unshift({ ts: Date.now(), msg: `Demo scan completed for ${target.url}` });
+    target.scanState = 'running';
+    target.scanStartedAt = Date.now();
+    target.scanDeadlineAt = Date.now() + DEMO_SCAN_MS * 2;
+    target.scanStage = 'starting';
+    target.scanRunId = null;
+    target.scanError = null;
+    s.activity.unshift({ ts: Date.now(), msg: `Demo scan started for ${target.url}` });
   });
+
+  setTimeout(() => setScanStage(site.id, 'polling', { scanRunId: 'demo-run' }), DEMO_SCAN_MS / 2);
+
+  setTimeout(() => {
+    update((s) => {
+      const target = s.sites.find((x) => x.id === site.id);
+      if (!target) return;
+      clearScanProgress(target);
+      target.scanError = null;
+      target.lastRun = 'just now';
+      for (const f of target.flows) {
+        if (f.type === 'Skipped') continue;
+        f.delta = '0';
+      }
+      s.activity.unshift({ ts: Date.now(), msg: `Demo scan completed for ${target.url}` });
+    });
+  }, DEMO_SCAN_MS).unref?.();
 }
