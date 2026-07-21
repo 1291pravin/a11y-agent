@@ -11,7 +11,8 @@
     "demo": "node server/index.mjs --demo",
     "test": "node --test",
     "test:e2e": "playwright test",
-    "test:all": "npm test && npm run test:e2e"
+    "test:all": "npm test && npm run test:e2e",
+    "record:demo": "node scripts/record-demo.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0"

@@ -8,3 +8,5 @@ data/state.db*
 *.log
 test-results/
 playwright-report/
+demo/*.webm
+data/demo-record.db*

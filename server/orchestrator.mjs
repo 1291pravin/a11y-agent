@@ -305,7 +305,7 @@ export async function verifyMerge(pr) {
   });
 
   const site = getState().sites.find((x) => x.id === pr.siteId);
-  const realScan = aqa.isReal && !!site?.testId;
+  const realScan = aqa.isReal && !!site?.testId && process.env.DEMO_FAST_VERIFY !== '1';
   if (realScan) {
     const ok = await startRealScan(site.id);
     if (!ok) {
