@@ -5,14 +5,32 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { unlinkSync } from 'node:fs';
 
 const PORT = 4517;
 const BASE = `http://localhost:${PORT}`;
+const STATE_FILE = join(tmpdir(), `a11y-agent-api-${process.pid}.json`);
 let proc;
+
+const DEMO_ENV = {
+  PORT: String(PORT),
+  AQA_TEAMSLUG: '',
+  AQA_API_KEY: '',
+  AQA_BASE: '',
+  FLEET_SITES: '',
+  CURSOR_API_KEY: '',
+  ADMIN_TOKEN: '',
+  GITHUB_WEBHOOK_SECRET: '',
+  STATE_FILE,
+  STATE_DB: '',
+  SCHEDULE_ENABLED: '',
+};
 
 before(async () => {
   proc = spawn(process.execPath, ['server/index.mjs'], {
-    env: { ...process.env, PORT: String(PORT), AQA_TEAMSLUG: '', AQA_API_KEY: '', CURSOR_API_KEY: '' },
+    env: { ...process.env, ...DEMO_ENV },
     stdio: 'ignore',
   });
   for (let i = 0; i < 30; i++) {
@@ -21,7 +39,10 @@ before(async () => {
   throw new Error('server did not start');
 });
 
-after(() => proc?.kill());
+after(() => {
+  proc?.kill();
+  try { unlinkSync(STATE_FILE); } catch {}
+});
 
 test('health reports demo mode without credentials', async () => {
   const res = await fetch(`${BASE}/api/health`);

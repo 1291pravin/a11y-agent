@@ -41,7 +41,7 @@ test.describe('M0 onboard', () => {
   test('validates required fields', async ({ page }) => {
     await page.goto('/#/onboard');
     await page.getByLabel('Website URL').fill('https://x.example.com');
-    await page.getByRole('button', { name: 'Onboard' }).click();
+    await page.getByRole('button', { name: 'Onboard', exact: true }).click();
     await expect(page.locator('#onboard-err')).toContainText(/repo/i);
   });
 
@@ -50,7 +50,7 @@ test.describe('M0 onboard', () => {
     await page.getByLabel('Website URL').fill('https://e2e.example.com');
     await page.getByLabel('Repository (owner/name)').fill('acme/e2e-test');
     await page.getByLabel('AQA suite ID').fill('TS999');
-    await page.getByRole('button', { name: 'Onboard' }).click();
+    await page.getByRole('button', { name: 'Onboard', exact: true }).click();
     await expect(page).toHaveURL(/#\/site\/site-/);
     await expect(page.getByRole('heading', { name: /e2e\.example\.com/ })).toBeVisible();
   });

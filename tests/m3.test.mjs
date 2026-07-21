@@ -121,7 +121,7 @@ test('mapCause reads selector arrays too and returns null when nothing matches',
 
 // ── fix-report export (demo-mode server) ────────────────────────────────────
 
-const PORT = 4520;
+const PORT = 4523;
 const BASE = `http://localhost:${PORT}`;
 const STATE_FILE = join(tmpdir(), `a11y-agent-m3-state-${process.pid}.json`);
 let proc;
