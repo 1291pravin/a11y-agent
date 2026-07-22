@@ -67,12 +67,16 @@ async function main() {
   const rawCopy = resolve(outDir, 'a11y-agent-demo-raw.webm');
   copyFileSync(video.path, rawCopy);
 
-  const sped = await maybeSpeedUp(rawCopy, outFile);
+  const sped = process.env.DEMO_SPEEDUP === '1' && await maybeSpeedUp(rawCopy, outFile);
   if (sped) {
     console.log(`Sped up with ffmpeg -> ${outFile}`);
   } else {
     copyFileSync(rawCopy, outFile);
-    console.log(`ffmpeg not available; saved raw recording -> ${outFile}`);
+    if (process.env.DEMO_SPEEDUP === '1') {
+      console.log(`ffmpeg not available; saved raw recording -> ${outFile}`);
+    } else {
+      console.log(`Saved recording (full length, subtitles included) -> ${outFile}`);
+    }
   }
 
   const sizeMb = (statSync(outFile).size / (1024 * 1024)).toFixed(1);

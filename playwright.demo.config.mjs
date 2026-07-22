@@ -11,14 +11,14 @@ export default defineConfig({
   testMatch: 'demo-video.spec.mjs',
   fullyParallel: false,
   workers: 1,
-  timeout: 120_000,
+  timeout: 600_000,
   reporter: [['list']],
   use: {
     ...devices['Desktop Chrome'],
     baseURL: BASE,
     viewport: { width: 1440, height: 900 },
     video: { mode: 'on', size: { width: 1440, height: 900 } },
-    launchOptions: { slowMo: 40 },
+    launchOptions: { slowMo: 25 },
     trace: 'off',
   },
   webServer: {

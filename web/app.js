@@ -637,9 +637,13 @@ function taskCard(t, sel) {
   const site = S.sites.find((x) => x.id === t.siteId);
   return `
     <div class="kcard ${t.state === 'working' ? 'active' : ''} ${sel && sel.id === t.id ? 'sel' : ''}" data-task="${t.id}">
-      <b>${esc(t.title)}</b>
+      <div class="topline" style="margin-bottom:4px">
+        <b>${esc(t.title)}</b>
+        ${t.state === 'failed' ? `<button class="btn small" data-act="retry" data-id="${esc(t.id)}" title="Re-launch the Cursor agent">Retry</button>` : ''}
+      </div>
       <div class="m">${esc(site ? site.url.replace('https://', '') : '')} &middot; ${esc(t.file || 'unmapped')}</div>
       ${t.state === 'working' ? `<span class="cursor-tag">&#9670; ${t.agent} agent</span>` : ''}
+      ${t.state === 'failed' ? `<span class="chip crit">failed</span>` : ''}
       ${t.state === 'reopened' ? `<span class="chip warn">reopened</span>` : ''}
       ${t.pr ? `<div class="m" style="margin-top:4px">PR #${esc(String(t.pr.num))}</div>` : ''}
     </div>`;
@@ -700,6 +704,10 @@ function bindActions() {
         if (act === 'dispatch') {
           await api('POST', `/api/causes/${id}/dispatch`);
           toast('ok', 'Fix task dispatched', 'Track it on the Tasks board.');
+        }
+        if (act === 'retry') {
+          await api('POST', `/api/tasks/${id}/retry`);
+          toast('ok', 'Task re-queued', 'The Cursor agent is launching again.');
         }
         if (act === 'scan') {
           const r = await api('POST', `/api/sites/${id}/scan`);

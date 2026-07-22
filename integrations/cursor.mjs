@@ -98,3 +98,16 @@ async function req(method, path, body) {
 }
 
 function safeJson(t) { try { return JSON.parse(t); } catch { return t; } }
+
+// Network blips and upstream 5xx/429 are worth retrying; 4xx auth/validation are not.
+export function isTransientError(err) {
+  if (!err) return false;
+  const msg = String(err.message || '').toLowerCase();
+  if (msg.includes('fetch failed') || msg.includes('network') || msg.includes('timeout')
+    || msg.includes('econnreset') || msg.includes('etimedout') || msg.includes('enotfound')
+    || msg.includes('socket hang up')) return true;
+  const code = err.cause?.code || err.code;
+  if (['ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED', 'EAI_AGAIN'].includes(code)) return true;
+  const status = err.status;
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
