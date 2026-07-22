@@ -13,6 +13,8 @@ const DEMO_STAGE_MS = Number(process.env.DEMO_STAGE_MS) || 5000;
 const DEMO_VERIFY_MS = Number(process.env.DEMO_VERIFY_MS) || 2000;
 const SCAN_TIMEOUT_MS = 10 * 60 * 1000;
 const CURSOR_MAX_POLL_ERRORS = 10;
+const CURSOR_LAUNCH_RETRIES = Number(process.env.CURSOR_LAUNCH_RETRIES) || 3;
+const CURSOR_LAUNCH_RETRY_MS = Number(process.env.CURSOR_LAUNCH_RETRY_MS) || 5000;
 
 export function dispatchTask(cause, site) {
   const task = {
@@ -38,16 +40,58 @@ export function dispatchTask(cause, site) {
   return task;
 }
 
-async function launchReal(task, cause, site) {
-  const prompt = cursor.buildFixPrompt(cause, site);
-  addLog(task.id, `launching Cursor cloud agent on ${site.repo} (${cursor.MODEL_ID})`);
-  const agent = await cursor.launchAgent({ repo: site.repo, prompt });
-  update((s) => {
-    const t = s.tasks.find((x) => x.id === task.id);
-    if (t) { t.agentId = agent.id; t.runId = agent.runId; t.state = 'working'; }
+// Re-queue a failed task and launch again. Cause stays on "task" so the
+// violations table does not offer a duplicate dispatch.
+export function retryTask(taskId) {
+  const s = getState();
+  const task = s.tasks.find((x) => x.id === taskId);
+  if (!task) throw Object.assign(new Error('task not found'), { status: 404 });
+  if (task.state !== 'failed') {
+    throw Object.assign(new Error(`task is ${task.state}, only failed tasks can be retried`), { status: 409 });
+  }
+  const cause = s.causes.find((c) => c.id === task.causeId);
+  const site = s.sites.find((x) => x.id === task.siteId);
+  if (!cause || !site) throw Object.assign(new Error('cause or site missing'), { status: 404 });
+
+  update((state) => {
+    const t = state.tasks.find((x) => x.id === taskId);
+    if (!t) return;
+    t.state = 'queued';
+    t.agentId = null;
+    t.runId = null;
+    t.pr = null;
+    t.log.push(line('retry requested - re-queuing task'));
+    cause.status = 'task';
+    state.activity.unshift({ ts: Date.now(), msg: `Retrying failed task ${taskId}` });
   });
-  addLog(task.id, `cursor agent ${agent.id} started (run ${agent.runId})`);
-  pollReal(task.id);
+
+  if (cursor.isReal) launchReal(task, cause, site).catch((err) => failTask(task.id, err.message));
+  return getState().tasks.find((x) => x.id === taskId);
+}
+
+async function launchReal(task, cause, site, attempt = 1) {
+  const prompt = cursor.buildFixPrompt(cause, site);
+  if (attempt === 1) {
+    addLog(task.id, `launching Cursor cloud agent on ${site.repo} (${cursor.MODEL_ID})`);
+  } else {
+    addLog(task.id, `retry ${attempt}/${CURSOR_LAUNCH_RETRIES}: launching Cursor cloud agent on ${site.repo}`);
+  }
+  try {
+    const agent = await cursor.launchAgent({ repo: site.repo, prompt });
+    update((s) => {
+      const t = s.tasks.find((x) => x.id === task.id);
+      if (t) { t.agentId = agent.id; t.runId = agent.runId; t.state = 'working'; }
+    });
+    addLog(task.id, `cursor agent ${agent.id} started (run ${agent.runId})`);
+    pollReal(task.id);
+  } catch (err) {
+    if (cursor.isTransientError(err) && attempt < CURSOR_LAUNCH_RETRIES) {
+      addLog(task.id, `launch failed (${err.message}), retrying in ${Math.round(CURSOR_LAUNCH_RETRY_MS / 1000)}s (${attempt}/${CURSOR_LAUNCH_RETRIES})`);
+      await sleep(CURSOR_LAUNCH_RETRY_MS);
+      return launchReal(task, cause, site, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 function pollReal(taskId) {

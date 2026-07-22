@@ -3,7 +3,7 @@
 import { existsSync } from 'node:fs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
-import { dispatchTask, demoScan, startRealScan, verifyMerge } from './orchestrator.mjs';
+import { dispatchTask, retryTask, demoScan, startRealScan, verifyMerge } from './orchestrator.mjs';
 import { buildIndex, mapCause } from './mapper.mjs';
 import { slotFor, schedulerEnabled } from './scheduler.mjs';
 import { allJourneys, findJourney, makeJourney, startJourneyRun, runnerHealth } from './journeys.mjs';
@@ -216,6 +216,15 @@ export async function handle(req, res, url) {
     const site = s.sites.find((x) => x.id === cause.siteId);
     const task = dispatchTask(cause, site);
     return json(res, 201, task);
+  }
+
+  if (method === 'POST' && (m = path.match(/^\/api\/tasks\/([\w-]+)\/retry$/))) {
+    try {
+      const task = retryTask(m[1]);
+      return json(res, 200, task);
+    } catch (err) {
+      return json(res, err.status || 500, { error: err.message });
+    }
   }
 
   // M4: GitHub pull_request webhook. Only merged closes matter; the signature

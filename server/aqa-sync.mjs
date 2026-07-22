@@ -4,7 +4,9 @@
 
 import { existsSync } from 'node:fs';
 import * as aqa from '../integrations/aqa.mjs';
+import { filterNeedFixIssues } from './issue-filter.mjs';
 import { buildIndex, mapCause } from './mapper.mjs';
+import { triageCauses } from './triage.mjs';
 
 export async function hydrateSite(cfg) {
   const suite = await aqa.suiteGet(cfg.suiteId);
@@ -73,8 +75,9 @@ export async function hydrateSite(cfg) {
     }
   }
 
-  const issues = latestRun ? await collectIssues(latestRun.id, suite, test) : [];
-  const grouped = groupIssues(issues, cfg.id);
+  const rawIssues = latestRun ? await collectIssues(latestRun.id, suite, test) : [];
+  const issues = filterNeedFixIssues(rawIssues);
+  const grouped = await triageCauses(groupIssues(issues, cfg.id), { siteUrl: cfg.url });
 
   // Root-cause mapper (M3): when the site has a local clone of its frontend
   // repo, index it once per hydration and map each cause to a file:line.
@@ -122,7 +125,8 @@ async function collectIssues(runId, suite, test) {
     const steps = runFlow?.numSteps || 1;
     for (let step = 0; step < Math.min(steps, maxSteps); step++) {
       try {
-        const res = await aqa.runFlowIssues(runId, flowId, { stepIndex: step });
+        // manual=false → AQA "Need fix" bucket (actionable violations).
+        const res = await aqa.runFlowIssues(runId, flowId, { stepIndex: step, manual: false });
         for (const issue of res.issues || []) {
           issues.push({ ...issue, flowName: runFlow?.name || flowId, step });
         }
@@ -180,7 +184,6 @@ export function groupIssues(issues, siteId, opts = {}) {
 
   return [...groups.values()]
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.instances - a.instances)
-    .slice(0, 25)
     .map((g, i) => ({
       id: `${idPrefix}-${i + 1}`,
       siteId: g.siteId,
