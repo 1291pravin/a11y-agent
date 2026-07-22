@@ -17,7 +17,7 @@
         <img class="brand-logo" src="/assets/colgate-palmolive-logo.svg" alt="Colgate-Palmolive — Make More Smiles">
         <div class="product-name">
           <span>A11y Agent</span>
-          <span id="mode-badge" class="chip idle"></span>
+          <span id="mode-badge" class="chip idle" hidden></span>
         </div>
       </div>
       <nav id="nav">
@@ -32,8 +32,34 @@
         <button id="demo-reset" class="btn ghost small">Reset demo data</button>
       </div>
     </aside>
-    <main id="main" aria-live="polite"></main>
+    <main id="main" aria-busy="true"></main>
   </div>
+
+  <!--
+    Live regions and overlays live OUTSIDE #main on purpose: app.js replaces
+    #main wholesale on every poll, which would destroy them (and, when #main
+    itself carried aria-live, re-announce the entire page every 3 seconds).
+  -->
+  <div id="announcer" role="status" aria-live="polite" class="sr-only"></div>
+  <div id="toasts" class="toasts"></div>
+  <div id="conn-banner" class="conn-banner" role="status" hidden></div>
+
+  <div id="token-dialog" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="token-title">
+      <h2 id="token-title">Admin token required</h2>
+      <p>This server runs with <code>ADMIN_TOKEN</code> set, so write actions need a bearer token. It is stored in this browser only.</p>
+      <div class="field">
+        <label for="token-input">Admin token</label>
+        <input id="token-input" type="password" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="err" id="token-err" role="alert"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="token-cancel" type="button">Cancel</button>
+        <button class="btn" id="token-save" type="button">Save &amp; retry</button>
+      </div>
+    </div>
+  </div>
+
   <script src="/app.js"></script>
 </body>
 </html>

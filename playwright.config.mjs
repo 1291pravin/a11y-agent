@@ -8,9 +8,9 @@ const BASE = `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: 'tests/e2e',
-  // demo-video.spec.mjs is the recorder script, not a check: it drives the
-  // fleet data served by scripts/demo-server.mjs (playwright.demo.config.mjs)
-  // and cannot pass against the demo seed this config boots.
+  // demo-video.spec.mjs belongs to playwright.demo.config.mjs: it needs
+  // scripts/demo-server.mjs on its own port, a synced fleet and a 120s timeout,
+  // so it can never pass here. Without this it gets swept up and fails the run.
   testIgnore: 'demo-video.spec.mjs',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),

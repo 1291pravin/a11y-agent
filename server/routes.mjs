@@ -162,9 +162,9 @@ export async function handle(req, res, url) {
   if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/scan$/))) {
     const site = getState().sites.find((x) => x.id === m[1]);
     if (!site) return json(res, 404, { error: 'site not found' });
+    if (site.scanState === 'running') return json(res, 409, { error: 'scan already running for this site' });
     if (aqa.isReal) {
       if (!site.testId) return json(res, 400, { error: 'site has no AQA testId; provision a test before scanning' });
-      if (site.scanState === 'running') return json(res, 409, { error: 'scan already running for this site' });
       startRealScan(site.id);
       return json(res, 202, { ok: true, mode: 'real' });
     }
