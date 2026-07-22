@@ -8,6 +8,10 @@ const BASE = `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: 'tests/e2e',
+  // demo-video.spec.mjs belongs to playwright.demo.config.mjs: it needs
+  // scripts/demo-server.mjs on its own port, a synced fleet and a 120s timeout,
+  // so it can never pass here. Without this it gets swept up and fails the run.
+  testIgnore: 'demo-video.spec.mjs',
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

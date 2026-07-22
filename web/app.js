@@ -8,22 +8,118 @@ let selectedTask = null; // task id shown in the log pane
 let token = localStorage.getItem('a11yAgentToken') || ''; // M5 admin token
 let batchResult = null;  // last CSV batch response, rendered on the onboard screen
 
+let booted = false;      // first successful fetch has landed (skeleton until then)
+let lastGoodAt = null;   // timestamp of the newest state we hold
+let pollMs = 3000;       // current poll interval; backs off while disconnected
+let pollTimer = null;
+let announced = {};      // transition signatures already read out, so the
+                         // announcer fires on change rather than every tick
+
+const POLL_BASE_MS = 3000;
+const POLL_MAX_MS = 30000;
+
 const main = document.getElementById('main');
+const announcer = document.getElementById('announcer');
+const connBanner = document.getElementById('conn-banner');
 
 // ── data ────────────────────────────────────────────────────────────────────
 
 async function refresh() {
   try {
     const res = await fetch('/api/state');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     S = await res.json();
-    document.getElementById('mode-badge').textContent =
-      S.mode.aqa === 'real' || S.mode.cursor === 'real' ? 'live' : 'demo';
+    booted = true;
+    lastGoodAt = Date.now();
+    pollMs = POLL_BASE_MS;
+    setConnected(true);
+    // Hidden until populated: an empty .chip still paints as a stray pill next
+    // to the product name during the skeleton.
+    const badge = document.getElementById('mode-badge');
+    badge.textContent = S.mode.aqa === 'real' || S.mode.cursor === 'real' ? 'live' : 'demo';
+    badge.hidden = false;
     const resetBtn = document.getElementById('demo-reset');
     if (resetBtn) resetBtn.textContent = S.mode.aqa === 'real' ? 'Sync from AQA' : 'Reset demo data';
     render();
+    announceTransitions();
   } catch (err) {
-    main.innerHTML = `<div class="empty">Server unreachable: ${esc(err.message)}</div>`;
+    // A dropped poll must not wipe the screen: keep the last good state on
+    // display, label it stale in the banner, and back off so a downed server
+    // is not hammered every 3s.
+    pollMs = Math.min(pollMs * 2, POLL_MAX_MS);
+    setConnected(false, err.message);
+    if (!booted) {
+      main.innerHTML = `<div class="empty">Cannot reach the server.<br>Retrying in ${Math.round(pollMs / 1000)}s.</div>`;
+      main.setAttribute('aria-busy', 'false');
+    }
   }
+}
+
+// Self-scheduling poll: interval varies with connection health, and a hidden
+// tab stops polling entirely until it is looked at again.
+function scheduleNext() {
+  clearTimeout(pollTimer);
+  if (document.hidden) return;
+  pollTimer = setTimeout(tick, pollMs);
+}
+
+async function tick() {
+  await refresh();
+  scheduleNext();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { clearTimeout(pollTimer); return; }
+  pollMs = POLL_BASE_MS;
+  tick();
+});
+
+function setConnected(ok, reason) {
+  if (ok) {
+    connBanner.hidden = true;
+    document.body.classList.remove('has-banner');
+    return;
+  }
+  const stamp = lastGoodAt ? new Date(lastGoodAt).toLocaleTimeString() : null;
+  connBanner.hidden = false;
+  document.body.classList.add('has-banner');
+  connBanner.textContent = stamp
+    ? `Lost contact with the server (${reason}). Retrying in ${Math.round(pollMs / 1000)}s. Showing data from ${stamp}.`
+    : `Cannot reach the server (${reason}). Retrying in ${Math.round(pollMs / 1000)}s.`;
+}
+
+// Announce state changes once, on transition. Announcing every poll would make
+// the live region unusable with a screen reader.
+function announceTransitions() {
+  if (!S) return;
+  const next = {};
+  for (const site of S.sites) {
+    next[`scan:${site.id}`] = site.scanState === 'running' ? 'running' : 'idle';
+  }
+  for (const t of S.tasks) next[`task:${t.id}`] = t.state;
+
+  const msgs = [];
+  for (const [key, value] of Object.entries(next)) {
+    const prev = announced[key];
+    if (prev === undefined || prev === value) continue;
+    const [kind, id] = key.split(':');
+    if (kind === 'scan' && value === 'idle') {
+      const site = S.sites.find((x) => x.id === id);
+      const d = site?.lastDiff;
+      msgs.push(site?.scanError
+        ? `Scan failed for ${hostOf(site.url)}: ${site.scanError}`
+        : `Scan complete for ${hostOf(site?.url)}${d ? `: ${d.new.length} new, ${d.fixed.length} fixed` : ''}`);
+    }
+    if (kind === 'scan' && value === 'running') {
+      msgs.push(`Scan started for ${hostOf(S.sites.find((x) => x.id === id)?.url)}`);
+    }
+    if (kind === 'task') {
+      const t = S.tasks.find((x) => x.id === id);
+      msgs.push(`Task ${t?.title || id} is now ${value}`);
+    }
+  }
+  announced = next;
+  if (msgs.length) announcer.textContent = msgs.join('. ');
 }
 
 async function api(method, path, body, opts = {}) {
@@ -38,9 +134,9 @@ async function api(method, path, body, opts = {}) {
   let res = await doFetch();
   if (res.status === 401) {
     // Admin auth is on and the stored token is missing/stale: ask once, retry.
-    const entered = window.prompt('Admin token required (ADMIN_TOKEN):');
+    const entered = await askForToken();
     if (entered) {
-      token = entered.trim();
+      token = entered;
       localStorage.setItem('a11yAgentToken', token);
       res = await doFetch();
     }
@@ -48,6 +144,68 @@ async function api(method, path, body, opts = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
+}
+
+// ── feedback primitives ─────────────────────────────────────────────────────
+
+const toastHost = document.getElementById('toasts');
+
+// Errors persist until dismissed; confirmations time out. Both are reachable
+// by keyboard and carry the right role for assistive tech.
+function toast(kind, title, message) {
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.setAttribute('role', kind === 'err' ? 'alert' : 'status');
+  el.innerHTML = `
+    <div class="tx"><b>${esc(title)}</b>${message ? `<span class="tm">${esc(message)}</span>` : ''}</div>
+    <button class="tclose" type="button" aria-label="Dismiss">&times;</button>`;
+  el.querySelector('.tclose').addEventListener('click', () => el.remove());
+  toastHost.appendChild(el);
+  if (kind !== 'err') setTimeout(() => el.remove(), 6000);
+}
+
+// Replaces window.prompt() for credential entry. Resolves to the trimmed token
+// or null if dismissed; restores focus to wherever the user was.
+function askForToken() {
+  const dialog = document.getElementById('token-dialog');
+  const input = document.getElementById('token-input');
+  const errBox = document.getElementById('token-err');
+  const save = document.getElementById('token-save');
+  const cancel = document.getElementById('token-cancel');
+  const returnFocus = document.activeElement;
+
+  return new Promise((resolve) => {
+    function close(value) {
+      dialog.hidden = true;
+      errBox.textContent = '';
+      input.value = '';
+      document.removeEventListener('keydown', onKey);
+      if (returnFocus && returnFocus.focus) returnFocus.focus();
+      resolve(value);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') close(null);
+      if (e.key === 'Enter' && document.activeElement === input) onSave();
+    }
+    function onSave() {
+      const v = input.value.trim();
+      if (!v) { errBox.textContent = 'Enter the token, or cancel.'; input.focus(); return; }
+      close(v);
+    }
+    save.onclick = onSave;
+    cancel.onclick = () => close(null);
+    document.addEventListener('keydown', onKey);
+    dialog.hidden = false;
+    input.focus();
+  });
+}
+
+function hostOf(url) { return String(url || '').replace('https://', ''); }
+
+function fmtDuration(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
 }
 
 // ── routing ─────────────────────────────────────────────────────────────────
@@ -59,7 +217,7 @@ function route() {
 }
 
 function render(force) {
-  if (!S) return;
+  if (!S) { renderSkeleton(); return; }
   // The 3s poll re-renders the whole main pane; skip it while the user is
   // typing in a form field so onboard/CSV input is not wiped mid-edit.
   // Navigation (hashchange) always renders.
@@ -79,8 +237,55 @@ function render(force) {
     prs: viewPrs,
     settings: viewSettings,
   };
+
+  // Wholesale innerHTML replacement destroys focus and scroll position. Capture
+  // both, swap, then put them back - otherwise the poll silently steals focus
+  // from a keyboard user every 3 seconds.
+  const restore = captureFocus();
+  const scrollY = window.scrollY;
+  main.setAttribute('aria-busy', 'true');
   main.innerHTML = (views[r.view] || viewDashboard)(r);
+  main.setAttribute('aria-busy', 'false');
   bindActions();
+  restore();
+  if (force !== true && window.scrollY !== scrollY) window.scrollTo(0, scrollY);
+}
+
+// Identify the focused element by a stable signature rather than a node
+// reference, since the node itself is destroyed by the re-render.
+function captureFocus() {
+  const ae = document.activeElement;
+  if (!ae || !main.contains(ae)) return () => {};
+  const sig = ae.id
+    ? `#${CSS.escape(ae.id)}`
+    : ae.dataset.act
+      ? `[data-act="${ae.dataset.act}"]${ae.dataset.id ? `[data-id="${ae.dataset.id}"]` : ''}`
+      : ae.dataset.task
+        ? `[data-task="${ae.dataset.task}"]`
+        : null;
+  if (!sig) return () => {};
+  return () => {
+    const next = main.querySelector(sig);
+    if (next && next !== document.activeElement) next.focus({ preventScroll: true });
+  };
+}
+
+// Shown until the first state lands, so the app never presents a blank pane.
+// Mirrors the dashboard layout so the swap is not a jolt.
+function renderSkeleton() {
+  main.setAttribute('aria-busy', 'true');
+  main.innerHTML = `
+    <div class="topline"><div class="sk" style="width:180px;height:26px"></div></div>
+    <div class="cards">
+      ${'<div class="kpi"><div class="sk" style="width:52px;height:26px"></div><div class="sk" style="width:88px;height:9px"></div></div>'.repeat(4)}
+    </div>
+    <div class="tbl-wrap" style="padding:18px">
+      <div class="sk" style="width:100%"></div>
+      <div class="sk" style="width:82%"></div>
+      <div class="sk" style="width:90%"></div>
+      <div class="sk" style="width:68%"></div>
+    </div>
+    <span class="sr-only">Loading dashboard</span>`;
 }
 
 window.addEventListener('hashchange', () => render(true));
@@ -144,13 +349,19 @@ function viewSite(r) {
   const clickFlows = site.flows.filter((f) => f.type === 'Click-state').length;
   const skipped = site.flows.filter((f) => f.type === 'Skipped').length;
 
+  const scanning = site.scanState === 'running';
+
   return `
     <div class="crumb"><a href="#/sites">Sites</a> / ${esc(site.url.replace('https://', ''))}</div>
     <div class="topline">
       <h1>${esc(site.url.replace('https://', ''))} <span class="chip acc">Suite ${esc(site.suiteId)}</span> ${siteChip(site)}</h1>
-      <span><button class="btn ghost" data-act="scan" data-id="${site.id}">Run tests</button></span>
+      <span><button class="btn ghost" data-act="scan" data-id="${site.id}"${scanning ? ' disabled aria-busy="true"' : ''}>${
+        scanning ? '<span class="spin"></span>Scanning&hellip;' : 'Run tests'
+      }</button></span>
     </div>
-    ${site.lastDiff ? `<div class="hint" style="margin:-4px 0 12px">Last scan: ${esc(String(site.lastDiff.new.length))} new, ${esc(String(site.lastDiff.fixed.length))} fixed, ${esc(String(site.lastDiff.persisting.length))} persisting</div>` : ''}
+    ${scanProgress(site)}
+    ${site.scanError && !scanning ? `<div class="err" style="margin:-4px 0 12px">Last scan failed: ${esc(site.scanError)}</div>` : ''}
+    ${site.lastDiff && !scanning ? `<div class="hint" style="margin:-4px 0 12px">Last scan: ${esc(String(site.lastDiff.new.length))} new, ${esc(String(site.lastDiff.fixed.length))} fixed, ${esc(String(site.lastDiff.persisting.length))} persisting</div>` : ''}
     <div class="cards">
       ${kpi(urlFlows, 'URL flows')}
       ${kpi(clickFlows, 'Click-state flows')}
@@ -341,6 +552,39 @@ function viewSettings() {
 
 // ── fragments ───────────────────────────────────────────────────────────────
 
+// AQA reports no completion percentage, so this is deliberately indeterminate.
+// What it CAN state truthfully: which stage, how long so far, the run id, and
+// when the orchestrator will give up. That is more useful than a fake bar.
+const SCAN_STAGES = {
+  starting: 'Requesting a run from AQA',
+  polling: 'Waiting for AQA to finish the run',
+  collecting: 'Collecting issues and regrouping causes',
+};
+
+function scanProgress(site) {
+  if (site.scanState !== 'running') return '';
+  const started = site.scanStartedAt;
+  const elapsed = started ? fmtDuration(Date.now() - started) : null;
+  const budget = site.scanDeadlineAt && started
+    ? fmtDuration(site.scanDeadlineAt - started)
+    : null;
+  // "elapsed 12s · timeout 10m" reads as a budget; "gives up after" reads as
+  // a threat and looks absurd next to the 4s demo deadline.
+  const stage = SCAN_STAGES[site.scanStage] || 'Scan in progress';
+
+  return `
+    <div class="panel scanbox">
+      <div class="sb-top">
+        <span class="sb-title"><span class="spin"></span>${esc(stage)}</span>
+        <span class="sb-meta">${elapsed ? `elapsed ${esc(elapsed)}` : ''}${budget ? ` &middot; timeout ${esc(budget)}` : ''}</span>
+      </div>
+      <div class="prog indet" role="progressbar" aria-label="Scan progress, duration unknown"><i></i></div>
+      <div class="sb-note">
+        ${site.scanRunId ? `Run <span class="mono">${esc(site.scanRunId)}</span>. ` : ''}Results replace the tables below when the run lands. Leaving this page does not stop the scan.
+      </div>
+    </div>`;
+}
+
 function kpi(v, l, d) {
   return `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div>${d ? `<div class="d">${d}</div>` : ''}</div>`;
 }
@@ -422,6 +666,19 @@ function esc(s) {
 
 // ── actions ─────────────────────────────────────────────────────────────────
 
+// Busy labels say what is happening, not that something is happening.
+const ACT_BUSY = {
+  dispatch: 'Dispatching&hellip;',
+  scan: 'Starting&hellip;',
+  merged: 'Recording&hellip;',
+};
+const ACT_FAIL = {
+  dispatch: 'Could not dispatch fix task',
+  scan: 'Could not start scan',
+  merged: 'Could not record merge',
+  export: 'Could not export report',
+};
+
 function bindActions() {
   document.querySelectorAll('[data-go]').forEach((el) =>
     el.addEventListener('click', () => { location.hash = el.dataset.go; }));
@@ -432,11 +689,28 @@ function bindActions() {
   document.querySelectorAll('[data-act]').forEach((el) =>
     el.addEventListener('click', async () => {
       const { act, id } = el.dataset;
+      const label = el.innerHTML;
+      // Immediate local feedback for the gap between click and the next poll.
+      // Longer-lived busy states (a running scan) are derived from server state
+      // in the view functions, so they survive the re-render this triggers.
       el.disabled = true;
+      el.setAttribute('aria-busy', 'true');
+      if (ACT_BUSY[act]) el.innerHTML = `<span class="spin"></span>${ACT_BUSY[act]}`;
       try {
-        if (act === 'dispatch') await api('POST', `/api/causes/${id}/dispatch`);
-        if (act === 'scan') await api('POST', `/api/sites/${id}/scan`);
-        if (act === 'merged') await api('POST', `/api/prs/${encodeURIComponent(id)}/merged`);
+        if (act === 'dispatch') {
+          await api('POST', `/api/causes/${id}/dispatch`);
+          toast('ok', 'Fix task dispatched', 'Track it on the Tasks board.');
+        }
+        if (act === 'scan') {
+          const r = await api('POST', `/api/sites/${id}/scan`);
+          toast('ok', 'Scan started', r.mode === 'real'
+            ? 'AQA is running the suite. Progress is shown above the tables.'
+            : 'Demo scan running.');
+        }
+        if (act === 'merged') {
+          await api('POST', `/api/prs/${encodeURIComponent(id)}/merged`);
+          toast('ok', 'Merge recorded', 'Verification re-run started.');
+        }
         if (act === 'export') {
           const cause = S.causes.find((c) => c.id === id);
           if (cause) {
@@ -444,12 +718,15 @@ function bindActions() {
             a.href = `/api/sites/${encodeURIComponent(cause.siteId)}/fix-report`;
             a.download = `fix-report-${cause.siteId}.md`;
             a.click();
+            toast('ok', 'Report downloading', `fix-report-${cause.siteId}.md`);
           }
         }
         await refresh();
       } catch (err) {
-        alert(err.message);
+        toast('err', ACT_FAIL[act] || 'Action failed', err.message);
         el.disabled = false;
+        el.removeAttribute('aria-busy');
+        el.innerHTML = label;
       }
     }));
 
@@ -490,15 +767,29 @@ function bindActions() {
   if (reset && !reset.dataset.bound) {
     reset.dataset.bound = '1';
     reset.addEventListener('click', async () => {
-      const path = S?.mode?.aqa === 'real' ? '/api/fleet/sync' : '/api/demo/reset';
-      await api('POST', path);
-      selectedTask = null;
-      await refresh();
+      const real = S?.mode?.aqa === 'real';
+      const path = real ? '/api/fleet/sync' : '/api/demo/reset';
+      const label = reset.textContent;
+      reset.disabled = true;
+      reset.setAttribute('aria-busy', 'true');
+      reset.textContent = real ? 'Syncing…' : 'Resetting…';
+      try {
+        await api('POST', path);
+        selectedTask = null;
+        await refresh();
+        toast('ok', real ? 'Fleet synced from AQA' : 'Demo data reset');
+      } catch (err) {
+        toast('err', real ? 'Sync failed' : 'Reset failed', err.message);
+      } finally {
+        reset.disabled = false;
+        reset.removeAttribute('aria-busy');
+        reset.textContent = label;
+      }
     });
   }
 }
 
 // ── boot ────────────────────────────────────────────────────────────────────
 
-refresh();
-setInterval(refresh, 3000);
+renderSkeleton();
+tick();
