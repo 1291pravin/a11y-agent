@@ -68,6 +68,39 @@ Batch onboarding: POST raw CSV (`url,repo,suiteId` header row, optional
 `testId,repoPath,framework`) to `/api/sites/batch`, or use the CSV section on
 the onboard screen.
 
+### Journeys and the evaluate runner (backend only so far)
+
+An AQA suite run is remote: AQA fetches the page itself, so it can only reach what is
+publicly routable. A **journey** inverts that. Our own Chromium walks a scripted set of
+steps, snapshots the DOM at each `snapshot` step, and POSTs it to AQA's stateless
+`/a11y/tests/evaluate` endpoint. Same rule engine, but localhost, preview builds, and
+pages behind a login become reachable.
+
+Journeys supplement the AQA suite, they do not replace it. The suite stays the
+compliance system of record, and a journey run only touches the causes it produced.
+
+The browser lives in its own process, so the control plane keeps its zero-dependency
+promise and Playwright stays a devDependency:
+
+```sh
+npm install && npx playwright install chromium   # once
+npm start          # control plane, port 4173
+npm run runner     # journey runner, port 4174 (needs AQA credentials)
+```
+
+```sh
+RUNNER_URL=http://localhost:4174   # where the control plane looks for the runner
+RUNNER_PORT=4174                   # runner listen port
+RUNNER_HOST=127.0.0.1              # loopback by default: /run drives a real browser
+AQA_ANALYZER_URL=...               # override to pin a local copy of aqa-analyzer.js
+```
+
+Journey CRUD lives under `/api/journeys` (writes obey `ADMIN_TOKEN` like every other
+write route); `POST /api/journeys/:id/run` returns 202 and the result lands in the
+journey's `lastRun`. There is **no UI for this yet**, and the path has not been
+confirmed against a live AQA key - see the evaluate checklist in
+[PLAN.md](PLAN.md) before trusting its output.
+
 ## Try the demo loop
 
 1. Open the dashboard - three sites, sorted by attention.

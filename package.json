@@ -9,6 +9,8 @@
     "start": "node --env-file=.env server/index.mjs",
     "start:demo": "node server/index.mjs",
     "demo": "node server/index.mjs --demo",
+    "runner": "node --env-file=.env runner/index.mjs",
+    "runner:demo": "node runner/index.mjs",
     "test": "node --test",
     "test:e2e": "playwright test",
     "test:all": "npm test && npm run test:e2e",

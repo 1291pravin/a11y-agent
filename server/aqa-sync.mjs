@@ -149,7 +149,12 @@ export function normalizeSelector(selector) {
   return normalized || 'unknown';
 }
 
-function groupIssues(issues, siteId) {
+// Group raw issues into root causes. `opts` exists so the evaluate/journey path
+// can share this function without colliding with the suite path: journey causes
+// get their own id namespace and carry the journey they came from, so a journey
+// run only ever replaces its own causes and never the suite's.
+export function groupIssues(issues, siteId, opts = {}) {
+  const { idPrefix = `cause-${siteId}`, source = 'suite', journeyId = null } = opts;
   const groups = new Map();
   for (const issue of issues) {
     const selector = normalizeSelector(issue.selectors?.[0] || issue.solutionId || 'unknown');
@@ -177,8 +182,10 @@ function groupIssues(issues, siteId) {
     .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || b.instances - a.instances)
     .slice(0, 25)
     .map((g, i) => ({
-      id: `cause-${siteId}-${i + 1}`,
+      id: `${idPrefix}-${i + 1}`,
       siteId: g.siteId,
+      source,
+      journeyId,
       title: g.title,
       rule: g.rule,
       ruleId: g.ruleId,
@@ -189,6 +196,28 @@ function groupIssues(issues, siteId) {
       status: g.status,
       evidence: g.evidence,
     }));
+}
+
+// ── Evaluate path adapter ───────────────────────────────────────────────────
+// The stateless /a11y/tests/evaluate endpoint runs the same rule engine as a
+// suite run, so per the vendored spec its issues already carry every field
+// groupIssues reads: ruleId, solutionId, selectors[], ruleShortTitle,
+// ruleTitle, needFixTitle, tagName, properties[]. The only thing genuinely
+// absent is flow attribution, because a journey snapshot has no AQA flow: the
+// snapshot label stands in for flowName, and the snapshot's position in the
+// journey stands in for step.
+//
+// This is the single place an evaluate response is reshaped. If the live API
+// names a field differently from the spec, correct it HERE rather than
+// teaching groupIssues about two sources.
+export function evaluateIssuesToRaw(snapshots = []) {
+  const raw = [];
+  snapshots.forEach((snap, index) => {
+    for (const issue of snap.issues || []) {
+      raw.push({ ...issue, flowName: snap.label || `snapshot-${index + 1}`, step: index });
+    }
+  });
+  return raw;
 }
 
 // Re-hydration after a rescan: keep id/status/mappedFile of causes that match a

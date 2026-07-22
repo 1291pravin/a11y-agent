@@ -6,6 +6,8 @@ import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } 
 import { dispatchTask, demoScan, startRealScan, verifyMerge } from './orchestrator.mjs';
 import { buildIndex, mapCause } from './mapper.mjs';
 import { slotFor, schedulerEnabled } from './scheduler.mjs';
+import { allJourneys, findJourney, makeJourney, startJourneyRun, runnerHealth } from './journeys.mjs';
+import { validateJourney } from './journey-model.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
 
@@ -69,6 +71,93 @@ export async function handle(req, res, url) {
   }
 
   let m;
+
+  // ── Journeys (evaluate path) ──────────────────────────────────────────────
+  // A journey is the supplement to a site's AQA suite, never a replacement:
+  // these routes only ever touch state.journeys and the causes a journey
+  // produced. suiteId/testId and suite-derived causes are left alone.
+
+  if (method === 'GET' && path === '/api/journeys') {
+    const list = allJourneys();
+    const siteId = url.searchParams.get('siteId');
+    return json(res, 200, { journeys: siteId ? list.filter((j) => j.siteId === siteId) : list });
+  }
+
+  if (method === 'POST' && path === '/api/journeys') {
+    const body = await readBody(req);
+    const site = getState().sites.find((x) => x.id === body.siteId);
+    if (!site) return json(res, 400, { error: 'unknown siteId' });
+    const parsed = validateJourney(body);
+    if (parsed.errors) return json(res, 400, { error: parsed.errors.join('; '), errors: parsed.errors });
+    // Idempotent create: re-posting the same journey name for a site returns
+    // the existing record instead of a duplicate (same rule as flowUrlCreate).
+    const existing = allJourneys().find((j) => j.siteId === site.id && j.name === parsed.journey.name);
+    if (existing) return json(res, 200, { ...existing, existed: true });
+    const journey = makeJourney(site.id, parsed.journey);
+    update((s) => {
+      allJourneys(s).push(journey);
+      s.activity.unshift({ ts: Date.now(), msg: `Journey "${journey.name}" created for ${site.url}` });
+    });
+    return json(res, 201, journey);
+  }
+
+  if (method === 'POST' && (m = path.match(/^\/api\/journeys\/([\w-]+)\/run$/))) {
+    const journey = findJourney(m[1]);
+    if (!journey) return json(res, 404, { error: 'journey not found' });
+    if (journey.runState === 'running') return json(res, 409, { error: 'journey run already in flight' });
+    startJourneyRun(journey.id);
+    return json(res, 202, { ok: true, journeyId: journey.id });
+  }
+
+  if (method === 'GET' && (m = path.match(/^\/api\/journeys\/([\w-]+)$/))) {
+    const journey = findJourney(m[1]);
+    if (!journey) return json(res, 404, { error: 'journey not found' });
+    return json(res, 200, journey);
+  }
+
+  if (method === 'POST' && (m = path.match(/^\/api\/journeys\/([\w-]+)$/))) {
+    const journey = findJourney(m[1]);
+    if (!journey) return json(res, 404, { error: 'journey not found' });
+    if (journey.runState === 'running') return json(res, 409, { error: 'journey run in flight' });
+    const body = await readBody(req);
+    // Full replace of the editable fields; siteId and id are immutable so a
+    // journey's causes can never migrate to another site behind our back.
+    const parsed = validateJourney({ ...journey, ...body });
+    if (parsed.errors) return json(res, 400, { error: parsed.errors.join('; '), errors: parsed.errors });
+    update((s) => {
+      const j = findJourney(journey.id, s);
+      if (j) Object.assign(j, parsed.journey);
+      s.activity.unshift({ ts: Date.now(), msg: `Journey "${parsed.journey.name}" updated` });
+    });
+    return json(res, 200, findJourney(journey.id));
+  }
+
+  if (method === 'DELETE' && (m = path.match(/^\/api\/journeys\/([\w-]+)$/))) {
+    const journey = findJourney(m[1]);
+    if (!journey) return json(res, 404, { error: 'journey not found' });
+    if (journey.runState === 'running') return json(res, 409, { error: 'journey run in flight' });
+    let dropped = 0;
+    let kept = 0;
+    update((s) => {
+      // Open causes go with the journey. Causes that already have a task or a
+      // PR against them stay: they are the evidence trail for work in flight.
+      s.causes = s.causes.filter((c) => {
+        if (c.journeyId !== journey.id) return true;
+        if (c.status === 'open') { dropped += 1; return false; }
+        kept += 1;
+        return true;
+      });
+      s.journeys = allJourneys(s).filter((j) => j.id !== journey.id);
+      s.activity.unshift({ ts: Date.now(), msg: `Journey "${journey.name}" deleted (${dropped} open cause(s) removed, ${kept} kept for in-flight work)` });
+    });
+    return json(res, 200, { ok: true, dropped, kept });
+  }
+
+  // The runner is a separate process, so "is it up" is a real question the
+  // control plane cannot answer from its own state.
+  if (method === 'GET' && path === '/api/runner/health') {
+    return json(res, 200, await runnerHealth());
+  }
 
   if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/scan$/))) {
     const site = getState().sites.find((x) => x.id === m[1]);
@@ -234,6 +323,7 @@ function publicState() {
     settings: s.settings,
     mode: modeInfo(),
     sites: s.sites.map((x) => ({ ...x, schedule: slotFor(x.id) })),
+    journeys: s.journeys || [],
     causes: s.causes,
     tasks: s.tasks,
     prs: s.prs,
