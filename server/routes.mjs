@@ -9,6 +9,8 @@ import { slotFor, schedulerEnabled } from './scheduler.mjs';
 import { allJourneys, findJourney, makeJourney, startJourneyRun, runnerHealth } from './journeys.mjs';
 import { validateJourney } from './journey-model.mjs';
 import { startDiscovery, acceptProposals, FOCUS_AREAS } from './journey-propose.mjs';
+import { journeyReportMarkdown, actionFor } from './report.mjs';
+import { scoreCauses, openCauses } from './aqa-sync.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
 
@@ -114,6 +116,23 @@ export async function handle(req, res, url) {
     if (journey.runState === 'running') return json(res, 409, { error: 'journey run already in flight' });
     startJourneyRun(journey.id);
     return json(res, 202, { ok: true, journeyId: journey.id });
+  }
+
+  // Full scored report for a journey run: score, what is failing and where,
+  // coverage, and the steps walked. Downloadable as Markdown.
+  if (method === 'GET' && (m = path.match(/^\/api\/journeys\/([\w-]+)\/report$/))) {
+    const s = getState();
+    const journey = findJourney(m[1], s);
+    if (!journey) return json(res, 404, { error: 'journey not found' });
+    const site = s.sites.find((x) => x.id === journey.siteId) || null;
+    const causes = openCauses(s.causes.filter((c) => c.journeyId === journey.id));
+    const body = journeyReportMarkdown({ journey, site, causes });
+    res.writeHead(200, {
+      'content-type': 'text/markdown; charset=utf-8',
+      'content-disposition': `attachment; filename="a11y-report-${journey.id}.md"`,
+      'content-length': Buffer.byteLength(body),
+    });
+    return res.end(body);
   }
 
   if (method === 'GET' && (m = path.match(/^\/api\/journeys\/([\w-]+)$/))) {
@@ -319,16 +338,9 @@ export async function handle(req, res, url) {
 }
 
 // Suggested manual actions per AQA rule, used by the fix-report export.
-const RULE_ACTIONS = {
-  'image-alt': 'Add descriptive alt text to the image (or alt="" if purely decorative).',
-  'link-name': 'Give the link a discernible name: visible text, aria-label, or a visually hidden span.',
-  'color-contrast': 'Raise the text/background contrast ratio to at least 4.5:1 (3:1 for large text).',
-  'frame-title': 'Add a title attribute to the iframe that describes its content.',
-  'label': 'Associate a label with the form control via label[for], aria-label, or aria-labelledby.',
-  'heading-order': 'Restructure headings so levels increase one step at a time without skipping.',
-};
+// Rule -> suggested action now lives in report.mjs so the site hand-off report
+// and the full journey report describe the same rule the same way.
 
-const DEFAULT_ACTION = 'Review the flagged element against the rule and patch the owning component or template.';
 
 function fixReport(site, causes) {
   const lines = [
@@ -354,7 +366,7 @@ function fixReport(site, causes) {
       `- Instances: ${c.instances}`,
       `- Pages: ${(c.pages || []).join(', ') || '-'}`,
       `- Evidence: \`${c.evidence || '-'}\``,
-      `- Suggested action: ${RULE_ACTIONS[c.ruleId] || DEFAULT_ACTION}`,
+      `- Suggested action: ${actionFor(c.ruleId)}`,
       '',
     );
   }
@@ -366,7 +378,15 @@ function publicState() {
   return {
     settings: s.settings,
     mode: modeInfo(),
-    sites: s.sites.map((x) => ({ ...x, schedule: slotFor(x.id) })),
+    // Score is derived, not stored: computing it here keeps it consistent with
+    // whatever the causes currently say instead of going stale behind them.
+    sites: s.sites.map((x) => ({
+      ...x,
+      schedule: slotFor(x.id),
+      score: scoreCauses(openCauses(s.causes.filter((c) => c.siteId === x.id)), {
+        units: Math.max(1, x.flows.length),
+      }),
+    })),
     journeys: s.journeys || [],
     causes: s.causes,
     tasks: s.tasks,

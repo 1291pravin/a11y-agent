@@ -15,7 +15,7 @@
 import { existsSync } from 'node:fs';
 import { getState, update, nextId } from './store.mjs';
 import { buildIndex, mapCause } from './mapper.mjs';
-import { groupIssues, mergeCauses, diffCauses, evaluateIssuesToRaw } from './aqa-sync.mjs';
+import { groupIssues, mergeCauses, diffCauses, evaluateIssuesToRaw, scoreCauses, openCauses } from './aqa-sync.mjs';
 
 const RUNNER_URL = (process.env.RUNNER_URL || 'http://localhost:4174').replace(/\/$/, '');
 const RUNNER_TIMEOUT_MS = Number(process.env.RUNNER_TIMEOUT_MS) || 5 * 60 * 1000;
@@ -152,15 +152,22 @@ async function runJourney(journeyId) {
     const diff = diffCauses(prevCauses, merged);
     s.causes = s.causes.filter((c) => c.journeyId !== journey.id).concat(merged);
 
+    const snaps = summarize(result.snapshots);
+    // Carried forward so the report can show a real movement rather than
+    // inventing a delta.
+    const prevScore = j.lastRun?.score?.score ?? null;
+
     j.runState = null;
     j.lastRun = {
       at: Date.now(),
       ok: true,
       ms: result.ms ?? null,
       steps: result.steps || [],
-      snapshots: summarize(result.snapshots),
+      snapshots: snaps,
       causes: merged.length,
       diff,
+      score: scoreCauses(openCauses(merged), { units: Math.max(1, snaps.length) }),
+      prevScore,
     };
     s.activity.unshift({
       ts: Date.now(),

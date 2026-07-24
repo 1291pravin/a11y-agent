@@ -355,6 +355,12 @@ function viewDashboard() {
   const violations = S.sites.reduce((n, x) => n + (x.total || 0), 0);
   const openPrs = S.prs.filter((p) => p.state === 'open').length;
   const running = S.tasks.filter((t) => ['queued', 'working', 'verifying'].includes(t.state)).length;
+  // Only sites that have actually been scored count toward the average, so an
+  // unscanned site does not drag the portfolio number down.
+  const scored = S.sites.filter((x) => x.score && x.flows.length);
+  const avgScore = scored.length
+    ? Math.round(scored.reduce((n, x) => n + x.score.score, 0) / scored.length)
+    : null;
   const order = { critical: 0, fixing: 1, onboarding: 2, healthy: 3 };
   const sites = [...S.sites].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
 
@@ -363,6 +369,7 @@ function viewDashboard() {
       <a class="btn" href="#/onboard">+ Onboard site</a></div>
     <div class="cards">
       ${kpi(covered + '<small>/' + S.sites.length + '</small>', 'Sites covered')}
+      ${kpi(avgScore == null ? '-' : `${avgScore}<small>/100</small>`, 'Avg a11y score')}
       ${kpi(violations, 'Open violations')}
       ${kpi(openPrs, 'Fix PRs open')}
       ${kpi(running, 'Agent tasks running')}
@@ -415,7 +422,7 @@ function viewSite(r) {
     <div class="topline">
       <h1>${esc(hostOf(site.url))} ${site.suiteId
         ? `<span class="chip acc">Suite ${esc(site.suiteId)}</span>`
-        : `<span class="chip acc">Quick scan</span>`} ${siteChip(site)}</h1>
+        : `<span class="chip acc">Quick scan</span>`} ${siteChip(site)} ${site.score ? scoreChip(site.score) : ''}</h1>
       <span><button class="btn ghost" data-act="scan" data-id="${site.id}"${scanning ? ' disabled aria-busy="true"' : ''}>${
         scanning ? '<span class="spin"></span>Scanning&hellip;' : 'Run tests'
       }</button></span>
@@ -816,7 +823,7 @@ function viewJourneys() {
     ${runnerHealthStrip()}
     ${journeys.length ? `
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Journey</th><th>Site</th><th>Steps</th><th>Last run</th><th>Result</th><th>Action</th></tr></thead>
+        <thead><tr><th>Journey</th><th>Site</th><th>Steps</th><th>Last run</th><th>Score</th><th>Result</th><th>Action</th></tr></thead>
         <tbody>${journeys.map(journeyRow).join('')}</tbody>
       </table></div>`
     : `<div class="empty">No journeys yet. A journey walks a real browser through a flow (cart, menu, login) and scores each snapshot.<br><a href="#/journey/new">Create your first journey</a>.</div>`}`;
@@ -840,6 +847,7 @@ function journeyRow(j) {
       <td>${esc(hostOf(site?.url))}</td>
       <td class="tnum">${(j.steps || []).length}</td>
       <td>${last}</td>
+      <td>${lr?.score ? scoreChip(lr.score) : '<span style="color:var(--ink-faint)">-</span>'}</td>
       <td>${result}</td>
       <td><button class="btn small" data-act="runjourney" data-id="${j.id}"${running ? ' disabled aria-busy="true"' : ''}>Run</button></td>
     </tr>`;
@@ -876,7 +884,102 @@ function runnerHealthStrip() {
 
 function viewJourney(r) {
   if (r.id === 'new' || r.sub === 'edit') return viewJourneyEditor(r);
+  if (r.sub === 'report') return viewJourneyReport(r);
   return viewJourneyDetail(r);
+}
+
+// Our score, not AQA's: colour bands match the grade thresholds in aqa-sync.
+function scoreChip(sc) {
+  if (!sc) return '<span class="chip idle">no score</span>';
+  const cls = sc.score >= 75 ? 'good' : sc.score >= 60 ? 'warn' : 'crit';
+  return `<span class="chip ${cls}">score ${sc.score}</span>`;
+}
+
+function scoreRing(sc) {
+  const pct = Math.max(0, Math.min(100, sc.score));
+  const color = pct >= 75 ? 'var(--good)' : pct >= 60 ? 'var(--warn)' : 'var(--crit)';
+  return `
+    <div class="ring" style="background:conic-gradient(${color} 0 ${pct}%, var(--surface-2) ${pct}% 100%)">
+      <div class="ring-in"><div><div class="ring-sc">${pct}</div><div class="ring-g">Grade ${esc(sc.grade)}</div></div></div>
+    </div>`;
+}
+
+function viewJourneyReport(r) {
+  const j = (S.journeys || []).find((x) => x.id === r.id);
+  if (!j) return `<div class="empty">Journey not found. <a href="#/journeys">Back to journeys</a>.</div>`;
+  const site = S.sites.find((x) => x.id === j.siteId);
+  const causes = S.causes.filter((c) => c.journeyId === j.id && c.status !== 'fixed');
+  const lr = j.lastRun;
+  const sc = lr?.score;
+
+  if (!lr) {
+    return `
+      <div class="crumb"><a href="#/journeys">Journeys</a> / <a href="#/journey/${j.id}">${esc(j.name)}</a> / Report</div>
+      <div class="topline"><h1>Accessibility report</h1></div>
+      <div class="empty">This journey has not been run yet, so there is nothing to report.
+        <button class="btn small" data-act="runjourney" data-id="${j.id}" style="margin-left:8px">Run journey</button>
+      </div>`;
+  }
+
+  const deltaText = lr.prevScore != null && sc
+    ? (sc.score === lr.prevScore ? 'no change vs last run'
+      : `${sc.score > lr.prevScore ? '+' : ''}${sc.score - lr.prevScore} vs last run`)
+    : 'no previous run to compare';
+
+  return `
+    <div class="crumb"><a href="#/journeys">Journeys</a> / <a href="#/journey/${j.id}">${esc(j.name)}</a> / Report</div>
+    <div class="topline">
+      <h1>Accessibility report</h1>
+      <span>
+        <button class="btn ghost small" data-act="exportjourney" data-id="${j.id}" style="margin-right:6px">Export .md</button>
+        <button class="btn" data-act="runjourney" data-id="${j.id}"${j.runState === 'running' ? ' disabled aria-busy="true"' : ''}>Re-run</button>
+      </span>
+    </div>
+    ${!lr.ok ? `<div class="err" style="margin:-4px 0 12px">Last run failed: ${esc(lr.error || 'unknown error')}. Figures below are from the last successful run, if any.</div>` : ''}
+    ${sc ? `
+      <div class="panel scorehero">
+        ${scoreRing(sc)}
+        <div class="sx">
+          <h3>${esc(j.name)} &middot; ${esc(hostOf(site?.url))}</h3>
+          <div class="m">${sc.instances} fix-required instance(s) across ${sc.causes} root cause(s) &middot; ${sc.units} snapshot(s) scored &middot; ${esc(deltaText)}.</div>
+          <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+            <span class="chip crit">${sc.counts.critical} critical</span>
+            <span class="chip warn">${sc.counts.serious} serious</span>
+            <span class="chip idle">${sc.counts.minor} minor</span>
+            ${lr.diff ? `<span class="chip good">${lr.diff.fixed.length} fixed since last run</span>` : ''}
+          </div>
+          <div class="hint" style="margin-top:8px">Manual-review findings are excluded: this counts only what a developer can fix in code.</div>
+        </div>
+      </div>` : ''}
+
+    <h2>What is failing &amp; where</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Severity</th><th>Where</th><th>Instances</th><th>Source</th></tr></thead>
+      <tbody>${causes.length ? causes.map((c) => `
+        <tr>
+          <td>${esc(c.title)}</td>
+          <td>${esc(c.rule)}</td>
+          <td><span class="chip ${c.severity === 'critical' ? 'crit' : c.severity === 'serious' ? 'warn' : 'idle'}">${esc(c.severity)}</span></td>
+          <td>${esc((c.pages || []).join(', ') || '-')}</td>
+          <td class="tnum">${c.instances}</td>
+          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped</span>'}</td>
+        </tr>`).join('') : `<tr><td colspan="6" class="empty">No open fix-required violations on this journey.</td></tr>`}
+      </tbody>
+    </table></div>
+
+    <h2>Coverage</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Snapshot</th><th>Context</th><th>Status</th><th>Fix-required</th><th>ms</th></tr></thead>
+      <tbody>${(lr.snapshots || []).length ? lr.snapshots.map((sn) => `
+        <tr>
+          <td>${esc(sn.label)}</td>
+          <td class="mono">${sn.context ? esc(sn.context) : '-'}</td>
+          <td>${stepStatusChip(sn.status)}</td>
+          <td class="tnum">${sn.issues}</td>
+          <td class="tnum">${sn.ms != null ? sn.ms : '-'}</td>
+        </tr>`).join('') : `<tr><td colspan="5" class="empty">No snapshots captured.</td></tr>`}
+      </tbody>
+    </table></div>`;
 }
 
 function viewJourneyDetail(r) {
@@ -892,8 +995,9 @@ function viewJourneyDetail(r) {
   return `
     <div class="crumb"><a href="#/journeys">Journeys</a> / ${esc(j.name)}</div>
     <div class="topline">
-      <h1>${esc(j.name)} <span class="chip acc">${esc(j.rulesetId)}</span>${running ? ' <span class="chip run">running</span>' : ''}</h1>
+      <h1>${esc(j.name)} <span class="chip acc">${esc(j.rulesetId)}</span> ${lr?.score ? scoreChip(lr.score) : ''}${running ? ' <span class="chip run">running</span>' : ''}</h1>
       <span>
+        ${lr ? `<a class="btn ghost small" href="#/journey/${j.id}/report" style="margin-right:6px">Full report</a>` : ''}
         <a class="btn ghost small" href="#/journey/${j.id}/edit" style="margin-right:6px">Edit</a>
         <button class="btn ghost small" data-act="deletejourney" data-id="${j.id}" style="margin-right:6px">Delete</button>
         <button class="btn" data-act="runjourney" data-id="${j.id}"${running ? ' disabled aria-busy="true"' : ''}>${running ? '<span class="spin"></span>Running&hellip;' : 'Run journey'}</button>
@@ -903,6 +1007,7 @@ function viewJourneyDetail(r) {
     ${lr && !lr.ok && !running ? `<div class="err" style="margin:-4px 0 12px">Last run failed: ${esc(lr.error || 'unknown error')}</div>` : ''}
     ${lr && lr.ok && lr.diff && !running ? `<div class="hint" style="margin:-4px 0 12px">Last run ${esc(fmtAgo(lr.at))} &middot; ${esc(fmtDuration(lr.ms || 0))} &middot; ${lr.diff.new.length} new, ${lr.diff.fixed.length} fixed, ${lr.diff.persisting.length} persisting</div>` : ''}
     <div class="cards">
+      ${kpi(lr?.score ? `${lr.score.score}<small>/100</small>` : '-', 'A11y score')}
       ${kpi((j.steps || []).length, 'Steps')}
       ${kpi(snaps.length, 'Snapshots')}
       ${kpi(violations, 'Open violations')}
@@ -1323,6 +1428,9 @@ const ACT_BUSY = {
   deletejourney: 'Deleting&hellip;',
 };
 const ACT_FAIL = {
+  exportjourney: 'Could not export report',
+  discover: 'Could not start discovery',
+  acceptproposals: 'Could not accept journeys',
   dispatch: 'Could not dispatch fix task',
   scan: 'Could not start scan',
   merged: 'Could not record merge',
@@ -1372,6 +1480,13 @@ function bindActions() {
         if (act === 'runjourney') {
           await api('POST', `/api/journeys/${id}/run`);
           toast('ok', 'Journey run started', 'Progress shows on the journey page.');
+        }
+        if (act === 'exportjourney') {
+          const a = document.createElement('a');
+          a.href = `/api/journeys/${encodeURIComponent(id)}/report`;
+          a.download = `a11y-report-${id}.md`;
+          a.click();
+          toast('ok', 'Report downloading', `a11y-report-${id}.md`);
         }
         if (act === 'discover') {
           await api('POST', `/api/sites/${id}/discover`, { focus: [] });

@@ -225,6 +225,67 @@ export function evaluateIssuesToRaw(snapshots = []) {
 
 // Re-hydration after a rescan: keep id/status/mappedFile of causes that match a
 // previous cause (same ruleId + title) so in-flight tasks stay linked.
+// ── Score ───────────────────────────────────────────────────────────────────
+//
+// A 0-100 accessibility score. This is OUR number, not AQA's: AQA reports
+// severities and instance counts, never a grade, so the formula lives here in
+// the open rather than looking like a vendor figure.
+//
+// Weighted penalty per instance, normalized by how much surface was actually
+// scored (snapshots for a journey, flows for a site) so a large site is not
+// automatically worse than a small one, then decayed onto 0-100.
+//
+// Decay rather than subtraction on purpose: 100 - penalty bottoms out at zero
+// almost immediately on a real site, which would make every failing page look
+// identical. A decay curve keeps 12 open instances and 60 open instances
+// distinguishable, which is what a team tracking progress needs.
+// Calibrated against anchors rather than picked by feel, because a curve that
+// makes every real site an F is worse than no score at all:
+//   clean page                 -> 100
+//   one minor instance         -> ~98
+//   one critical instance      -> ~85   (noticeable, not catastrophic)
+//   three critical + a serious -> ~58   (clearly failing)
+//   ten critical instances     -> ~20
+const SEVERITY_WEIGHT = { critical: 10, serious: 4, minor: 1 };
+const SCORE_DECAY = Number(process.env.SCORE_DECAY) || 60;
+
+export function scoreCauses(causes = [], { units = 1 } = {}) {
+  const counts = { critical: 0, serious: 0, minor: 0 };
+  let penalty = 0;
+
+  for (const cause of causes) {
+    const severity = SEVERITY_WEIGHT[cause.severity] ? cause.severity : 'minor';
+    const instances = Number(cause.instances) || 0;
+    counts[severity] += instances;
+    penalty += SEVERITY_WEIGHT[severity] * instances;
+  }
+
+  const density = penalty / Math.max(1, units);
+  const score = Math.round(100 * Math.exp(-density / SCORE_DECAY));
+  return {
+    score,
+    grade: gradeFor(score),
+    counts,
+    instances: counts.critical + counts.serious + counts.minor,
+    causes: causes.length,
+    units,
+  };
+}
+
+export function gradeFor(score) {
+  if (score >= 90) return 'A';
+  if (score >= 75) return 'B';
+  if (score >= 60) return 'C';
+  if (score >= 40) return 'D';
+  return 'F';
+}
+
+// Causes already fixed and verified are history, not open problems, so they do
+// not drag the score down.
+export function openCauses(causes = []) {
+  return causes.filter((c) => c.status !== 'fixed');
+}
+
 export function mergeCauses(prevCauses, nextCauses) {
   const prevByKey = new Map(prevCauses.map((c) => [causeKey(c), c]));
   const claimed = new Set();
