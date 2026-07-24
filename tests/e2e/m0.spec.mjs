@@ -38,21 +38,37 @@ test.describe('M0 site detail', () => {
 });
 
 test.describe('M0 onboard', () => {
-  test('validates required fields', async ({ page }) => {
+  // /#/onboard is now a fork: the suite path ("full") and the quick scan. The
+  // suite form moved to /#/onboard/full.
+  test('offers both onboarding paths', async ({ page }) => {
     await page.goto('/#/onboard');
+    await expect(page.getByRole('heading', { name: 'Full audit + auto-fix' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Quick scan' })).toBeVisible();
+  });
+
+  test('validates required fields', async ({ page }) => {
+    await page.goto('/#/onboard/full');
     await page.getByLabel('Website URL').fill('https://x.example.com');
     await page.getByRole('button', { name: 'Onboard', exact: true }).click();
     await expect(page.locator('#onboard-err')).toContainText(/repo/i);
   });
 
   test('creates a site and navigates to detail', async ({ page }) => {
-    await page.goto('/#/onboard');
+    await page.goto('/#/onboard/full');
     await page.getByLabel('Website URL').fill('https://e2e.example.com');
-    await page.getByLabel('Repository (owner/name)').fill('acme/e2e-test');
+    await page.getByLabel('GitHub repo (owner/name)').fill('acme/e2e-test');
     await page.getByLabel('AQA suite ID').fill('TS999');
     await page.getByRole('button', { name: 'Onboard', exact: true }).click();
     await expect(page).toHaveURL(/#\/site\/site-/);
     await expect(page.getByRole('heading', { name: /e2e\.example\.com/ })).toBeVisible();
+  });
+
+  // The quick path needs only a URL: no repo, no AQA suite.
+  test('quick scan accepts a URL alone', async ({ page }) => {
+    await page.goto('/#/onboard/quick');
+    await expect(page.getByRole('heading', { name: /Quick scan/ })).toBeVisible();
+    await expect(page.getByLabel('Website URL')).toBeVisible();
+    await expect(page.getByRole('button', { name: /Scan & discover journeys/ })).toBeVisible();
   });
 });
 
