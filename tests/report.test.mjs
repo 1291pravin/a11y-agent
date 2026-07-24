@@ -31,8 +31,8 @@ const CAUSES = [
 
 function journeyWith(overrides = {}) {
   const snapshots = [
-    { label: 'Checkout form', context: 'main#checkout', status: 'ok', error: null, ms: 1740, bytes: 100, issues: 4 },
-    { label: 'Payment step', context: null, status: 'ok', error: null, ms: 1610, bytes: 90, issues: 1 },
+    { label: 'Checkout form', context: 'main#checkout', status: 'ok', error: null, ms: 1740, bytes: 100, issues: 4, manualIssues: 2 },
+    { label: 'Payment step', context: null, status: 'ok', error: null, ms: 1610, bytes: 90, issues: 1, manualIssues: 0 },
   ];
   return {
     id: 'journey-1', siteId: 'site-1', name: 'Checkout flow', rulesetId: 'WCAG21AA',
@@ -100,10 +100,15 @@ test('every cause is listed with where it is, its source, and what to do', () =>
   assert.match(md, /- Source: unmapped \(vendor, CMS, or outside the indexed repo\)/);
 });
 
-test('coverage table carries every snapshot', () => {
+test('coverage table carries every snapshot, splitting fix-required from manual', () => {
   const md = journeyReportMarkdown({ journey: journeyWith(), site: SITE, causes: CAUSES });
-  assert.match(md, /\| Checkout form \| main#checkout \| ok \| 4 \| 1740 \|/);
-  assert.match(md, /\| Payment step \| - \| ok \| 1 \| 1610 \|/);
+  assert.match(md, /\| Checkout form \| main#checkout \| ok \| 4 \| 2 \| 1740 \|/);
+  assert.match(md, /\| Payment step \| - \| ok \| 1 \| 0 \| 1610 \|/);
+});
+
+test('manual findings are reported as excluded rather than dropped silently', () => {
+  const md = journeyReportMarkdown({ journey: journeyWith(), site: SITE, causes: CAUSES });
+  assert.match(md, /2 manual-review finding\(s\) were reported but are not counted in the score/);
 });
 
 test('no open violations reads as a clean result, not a blank section', () => {

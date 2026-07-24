@@ -268,6 +268,12 @@ export async function handle(req, res, url) {
     if (!cause.mappedFile) return json(res, 400, { error: 'cause is unmapped; export a report instead' });
     if (cause.status !== 'open') return json(res, 409, { error: `cause already ${cause.status}` });
     const site = s.sites.find((x) => x.id === cause.siteId);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    // A fix task is a code change, so it needs somewhere to land. Quick-scan
+    // sites are audit-only until a GitHub repo is attached.
+    if (!site.repo) {
+      return json(res, 400, { error: 'site has no GitHub repo; add one to enable auto-fix, or export a report instead' });
+    }
     const task = dispatchTask(cause, site);
     return json(res, 201, task);
   }

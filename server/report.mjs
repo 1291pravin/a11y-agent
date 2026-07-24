@@ -110,11 +110,22 @@ export function journeyReportMarkdown({ journey, site, causes = [] }) {
 
   lines.push('## Coverage', '');
   if (snaps.length) {
-    lines.push('| Snapshot | Context | Status | Issues | ms |', '| --- | --- | --- | --- | --- |');
+    lines.push(
+      '| Snapshot | Context | Status | Fix-required | Manual | ms |',
+      '| --- | --- | --- | --- | --- | --- |',
+    );
     for (const s of snaps) {
-      lines.push(`| ${s.label} | ${s.context || '-'} | ${s.status} | ${s.issues} | ${s.ms ?? '-'} |`);
+      lines.push(`| ${s.label} | ${s.context || '-'} | ${s.status} | ${s.issues} | ${s.manualIssues || 0} | ${s.ms ?? '-'} |`);
     }
     lines.push('');
+    const manual = snaps.reduce((n, s) => n + (s.manualIssues || 0), 0);
+    if (manual) {
+      lines.push(
+        `${manual} manual-review finding(s) were reported but are not counted in the score:`,
+        'they need a human judgement call, not a code change.',
+        '',
+      );
+    }
   } else {
     lines.push('No snapshots were captured.', '');
   }

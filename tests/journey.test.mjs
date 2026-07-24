@@ -22,6 +22,7 @@ import { join } from 'node:path';
 
 import { validateJourney, STEP_TYPES } from '../server/journey-model.mjs';
 import { evaluateIssuesToRaw, groupIssues } from '../server/aqa-sync.mjs';
+import { filterNeedFixIssues } from '../server/issue-filter.mjs';
 
 const PORT = 4540;
 const RUNNER_PORT = 4541;
@@ -169,6 +170,30 @@ test('groupIssues folds evaluate issues into causes the existing grouping shape'
   assert.equal(first.journeyId, 'journey-7');
   assert.equal(first.siteId, 'site-x');
   assert.equal(causes[1].severity, 'serious');
+});
+
+// The journey path applies the same manual/need-fix split as the suite path, so
+// "fix-required" means the same thing on both and the score never counts a
+// finding that needs a human judgement call rather than a code change. This
+// composes the exact chain runJourney uses.
+test('manual-review findings never become journey causes', () => {
+  const raw = evaluateIssuesToRaw([
+    { label: 'home', issues: [
+      evIssue('r1', 's1', 'img.hero', 'img', ['needs fix', 'high']),
+      evIssue('r-manual', 's9', 'div.banner', 'div', ['check manually', 'medium']),
+    ] },
+  ]);
+  assert.equal(raw.length, 2);
+
+  const filtered = filterNeedFixIssues(raw);
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].ruleId, 'r1');
+
+  const causes = groupIssues(filtered, 'site-x', {
+    idPrefix: 'cause-journey-1', source: 'journey', journeyId: 'journey-1',
+  });
+  assert.equal(causes.length, 1);
+  assert.equal(causes[0].ruleId, 'r1');
 });
 
 test('groupIssues keeps the suite id namespace and source by default', () => {

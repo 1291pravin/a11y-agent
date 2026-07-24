@@ -969,15 +969,16 @@ function viewJourneyReport(r) {
 
     <h2>Coverage</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Snapshot</th><th>Context</th><th>Status</th><th>Fix-required</th><th>ms</th></tr></thead>
+      <thead><tr><th>Snapshot</th><th>Context</th><th>Status</th><th>Fix-required</th><th>Manual</th><th>ms</th></tr></thead>
       <tbody>${(lr.snapshots || []).length ? lr.snapshots.map((sn) => `
         <tr>
           <td>${esc(sn.label)}</td>
           <td class="mono">${sn.context ? esc(sn.context) : '-'}</td>
           <td>${stepStatusChip(sn.status)}</td>
           <td class="tnum">${sn.issues}</td>
+          <td class="tnum">${sn.manualIssues ? `<span title="Manual-review findings: reported, never scored">${sn.manualIssues}</span>` : '-'}</td>
           <td class="tnum">${sn.ms != null ? sn.ms : '-'}</td>
-        </tr>`).join('') : `<tr><td colspan="5" class="empty">No snapshots captured.</td></tr>`}
+        </tr>`).join('') : `<tr><td colspan="6" class="empty">No snapshots captured.</td></tr>`}
       </tbody>
     </table></div>`;
 }
@@ -1030,15 +1031,16 @@ function viewJourneyDetail(r) {
 
     <h2>Snapshots</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Label</th><th>Context</th><th>Status</th><th>Issues</th><th>ms</th></tr></thead>
+      <thead><tr><th>Label</th><th>Context</th><th>Status</th><th>Fix-required</th><th>Manual</th><th>ms</th></tr></thead>
       <tbody>${snaps.length ? snaps.map((sn) => `
         <tr>
           <td>${esc(sn.label)}</td>
           <td class="mono">${sn.context ? esc(sn.context) : '-'}</td>
           <td>${stepStatusChip(sn.status)}</td>
           <td class="tnum">${sn.issues}</td>
+          <td class="tnum">${sn.manualIssues ? `<span title="Manual-review findings: reported, never scored">${sn.manualIssues}</span>` : '-'}</td>
           <td class="tnum">${sn.ms != null ? sn.ms : '-'}</td>
-        </tr>`).join('') : `<tr><td colspan="5" class="empty">No snapshots recorded.</td></tr>`}
+        </tr>`).join('') : `<tr><td colspan="6" class="empty">No snapshots recorded.</td></tr>`}
       </tbody>
     </table></div>
 
@@ -1366,8 +1368,14 @@ function runnerChip() {
 }
 
 function causeAction(c) {
-  if (c.status === 'open' && c.mappedFile)
+  const site = S.sites.find((x) => x.id === c.siteId);
+  // A fix task needs a repo to land in. Offering the button on an audit-only
+  // (quick-scan) site would just produce a 400, so offer the report instead and
+  // say why.
+  if (c.status === 'open' && c.mappedFile && site?.repo)
     return `<button class="btn small" data-act="dispatch" data-id="${c.id}">Dispatch fix task</button>`;
+  if (c.status === 'open' && c.mappedFile && !site?.repo)
+    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Add a GitHub repo to this site to enable auto-fix">Export report</button>`;
   if (c.status === 'open')
     return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Downloads fix-report.md covering all unmapped open causes for this site">Export report</button>`;
   if (c.status === 'task') {

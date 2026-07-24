@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import { getState, update, nextId } from './store.mjs';
 import { buildIndex, mapCause } from './mapper.mjs';
 import { groupIssues, mergeCauses, diffCauses, evaluateIssuesToRaw, scoreCauses, openCauses } from './aqa-sync.mjs';
+import { filterNeedFixIssues } from './issue-filter.mjs';
 
 const RUNNER_URL = (process.env.RUNNER_URL || 'http://localhost:4174').replace(/\/$/, '');
 const RUNNER_TIMEOUT_MS = Number(process.env.RUNNER_TIMEOUT_MS) || 5 * 60 * 1000;
@@ -121,7 +122,11 @@ async function runJourney(journeyId) {
     return;
   }
 
-  const raw = evaluateIssuesToRaw(result.snapshots);
+  // Same manual/need-fix split the suite path applies (aqa-sync). A snapshot can
+  // opt into manual checks, but manual findings are advisory: they are counted
+  // and reported per snapshot, never turned into causes and never scored, so
+  // "fix-required" means the same thing on both paths.
+  const raw = filterNeedFixIssues(evaluateIssuesToRaw(result.snapshots));
   const nextCauses = groupIssues(raw, journey.siteId, {
     idPrefix: `cause-${journey.id}`,
     source: 'journey',
@@ -179,14 +184,22 @@ async function runJourney(journeyId) {
 // Issues become causes; the run record keeps only per-snapshot counts so state
 // stays small enough to ship whole on every /api/state poll.
 function summarize(snapshots = []) {
-  return snapshots.map((s) => ({
-    label: s.label,
-    pageUrl: s.pageUrl,
-    context: s.context || null,
-    status: s.status,
-    error: s.error || null,
-    ms: s.ms ?? null,
-    bytes: s.bytes ?? null,
-    issues: (s.issues || []).length,
-  }));
+  return snapshots.map((s) => {
+    const all = s.issues || [];
+    const fix = filterNeedFixIssues(all);
+    return {
+      label: s.label,
+      pageUrl: s.pageUrl,
+      context: s.context || null,
+      status: s.status,
+      error: s.error || null,
+      ms: s.ms ?? null,
+      bytes: s.bytes ?? null,
+      // issues is the fix-required count, matching what becomes causes and what
+      // the score counts. Manual findings are surfaced separately rather than
+      // dropped silently, so a snapshot that asked for them still reports them.
+      issues: fix.length,
+      manualIssues: all.length - fix.length,
+    };
+  });
 }
