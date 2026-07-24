@@ -41,9 +41,11 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const journey = body?.journey;
       if (!journey?.steps?.length) return json(res, 400, { error: 'body must be {journey} with a non-empty steps array' });
-      if (!aqa.isReal) return json(res, 400, { error: 'AQA credentials not set (AQA_TEAMSLUG, AQA_API_KEY); evaluate needs real credentials' });
+      // In demo mode the journey still walks and captures its snapshot points;
+      // it just is not scored (see journey-run snapshot()). Only a scored run
+      // needs AQA credentials, so refusing here would block verifying the walk.
       const result = await enqueue(() => runJourney(journey));
-      console.log(`run ${journey.id || journey.name}: ${result.ok ? 'ok' : 'failed'} in ${result.ms} ms, ${result.snapshots.length} snapshot(s)`);
+      console.log(`run ${journey.id || journey.name}: ${result.ok ? 'ok' : 'failed'}${result.scored ? '' : ' (unscored)'} in ${result.ms} ms, ${result.snapshots.length} snapshot(s)`);
       return json(res, 200, result);
     }
 

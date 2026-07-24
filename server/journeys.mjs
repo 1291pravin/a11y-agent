@@ -122,6 +122,23 @@ async function runJourney(journeyId) {
     return;
   }
 
+  // Demo mode: the browser walked the journey but nothing was scored. Record it
+  // as a real, successful run so the steps and snapshot points are visible, but
+  // leave the causes and score alone - a fabricated clean score would be a lie.
+  if (result.scored === false) {
+    update((s) => {
+      const j = findJourney(journeyId, s);
+      if (!j) return;
+      j.runState = null;
+      j.lastRun = {
+        at: Date.now(), ok: true, unscored: true, ms: result.ms ?? null,
+        steps: result.steps || [], snapshots: summarize(result.snapshots),
+      };
+      s.activity.unshift({ ts: Date.now(), msg: `Journey walked (not scored - set AQA credentials): ${journey.name}` });
+    });
+    return;
+  }
+
   // Same manual/need-fix split the suite path applies (aqa-sync). A snapshot can
   // opt into manual checks, but manual findings are advisory: they are counted
   // and reported per snapshot, never turned into causes and never scored, so

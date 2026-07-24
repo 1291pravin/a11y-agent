@@ -52,6 +52,10 @@ export async function runJourney(journey) {
     ok: !failure,
     error: failure,
     journeyId: journey.id || null,
+    // Whether the snapshots carry AQA scores. In demo mode the journey still
+    // walks and captures its snapshot points, but nothing is scored, so the
+    // control plane records an unscored run rather than a fake clean one.
+    scored: aqa.isReal,
     startedAt,
     finishedAt: Date.now(),
     ms: Date.now() - startedAt,
@@ -190,9 +194,21 @@ async function executeStep(page, step, journey, dry = false) {
 
 async function snapshot(page, step, journey) {
   const t0 = Date.now();
+  const rulesetId = step.rulesetId || journey.rulesetId;
+
+  // Demo mode: record that the snapshot point was reached, but do not inject the
+  // vendor analyzer or call evaluate. This keeps a demo run entirely
+  // self-contained (no AQA account, no vendor script) so the Playwright walk can
+  // be verified on any site without credentials.
+  if (!aqa.isReal) {
+    return {
+      label: step.label, pageUrl: page.url(), rulesetId, context: step.context || null,
+      ms: Date.now() - t0, bytes: null, status: 'unscored', error: null, issues: [], scored: false,
+    };
+  }
+
   const code = await capture(page);
   const pageUrl = page.url();
-  const rulesetId = step.rulesetId || journey.rulesetId;
 
   const res = await aqa.evaluate({
     rulesetId,

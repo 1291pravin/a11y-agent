@@ -838,6 +838,7 @@ function journeyRow(j) {
     : lr ? esc(fmtAgo(lr.at)) : 'never';
   let result = '<span class="chip idle">not run</span>';
   if (lr && !lr.ok) result = '<span class="chip crit">failed</span>';
+  else if (lr && lr.unscored) result = '<span class="chip acc">walked</span>';
   else if (lr && lr.diff) result = lr.diff.new.length
     ? `<span class="chip crit">${lr.diff.new.length} new</span>`
     : `<span class="chip good">clean</span>`;
@@ -1006,9 +1007,10 @@ function viewJourneyDetail(r) {
     </div>
     ${journeyRunProgress(j)}
     ${lr && !lr.ok && !running ? `<div class="err" style="margin:-4px 0 12px">Last run failed: ${esc(lr.error || 'unknown error')}</div>` : ''}
+    ${lr && lr.unscored && !running ? `<div class="jhealth warn" style="border-left-color:var(--warn);margin:-4px 0 14px"><span class="jh-l"><span class="dot" style="background:var(--warn)"></span>Walked, not scored</span><span class="jh-d">The browser walked all ${(lr.steps || []).length} steps, but scoring needs AQA credentials. Set <span class="mono">AQA_TEAMSLUG</span> + <span class="mono">AQA_API_KEY</span> and re-run for a score and violations.</span></div>` : ''}
     ${lr && lr.ok && lr.diff && !running ? `<div class="hint" style="margin:-4px 0 12px">Last run ${esc(fmtAgo(lr.at))} &middot; ${esc(fmtDuration(lr.ms || 0))} &middot; ${lr.diff.new.length} new, ${lr.diff.fixed.length} fixed, ${lr.diff.persisting.length} persisting</div>` : ''}
     <div class="cards">
-      ${kpi(lr?.score ? `${lr.score.score}<small>/100</small>` : '-', 'A11y score')}
+      ${kpi(lr?.score ? `${lr.score.score}<small>/100</small>` : (lr?.unscored ? '<small>unscored</small>' : '-'), 'A11y score')}
       ${kpi((j.steps || []).length, 'Steps')}
       ${kpi(snaps.length, 'Snapshots')}
       ${kpi(violations, 'Open violations')}
