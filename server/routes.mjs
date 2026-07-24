@@ -8,6 +8,7 @@ import { buildIndex, mapCause } from './mapper.mjs';
 import { slotFor, schedulerEnabled } from './scheduler.mjs';
 import { allJourneys, findJourney, makeJourney, startJourneyRun, runnerHealth } from './journeys.mjs';
 import { validateJourney } from './journey-model.mjs';
+import { startDiscovery, acceptProposals, FOCUS_AREAS } from './journey-propose.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
 
@@ -36,9 +37,15 @@ export async function handle(req, res, url) {
     return json(res, 200, publicState());
   }
 
+  // Two ways to onboard. The default ("full") is the AQA suite path and keeps
+  // its original contract. mode:'quick' is the evaluate path: it needs nothing
+  // but a URL and a ruleset, because evaluate scores a DOM we captured
+  // ourselves and never touches a suite. A repo stays optional in both - it
+  // enables source mapping and Cursor auto-fix, not scanning.
   if (method === 'POST' && path === '/api/sites') {
     const body = await readBody(req);
-    const missing = ['url', 'repo', 'suiteId'].filter((k) => !body[k]);
+    const required = body.mode === 'quick' ? ['url', 'rulesetId'] : ['url', 'repo', 'suiteId'];
+    const missing = required.filter((k) => !body[k]);
     if (missing.length) return json(res, 400, { error: `missing: ${missing.join(', ')}` });
     const site = makeSite(body);
     update((s) => {
@@ -157,6 +164,34 @@ export async function handle(req, res, url) {
   // control plane cannot answer from its own state.
   if (method === 'GET' && path === '/api/runner/health') {
     return json(res, 200, await runnerHealth());
+  }
+
+  // ── Journey discovery ─────────────────────────────────────────────────────
+  // Propose the journeys rather than making someone hand-build them. Fire and
+  // forget: the client watches site.discover through the state poll, then
+  // reviews and accepts.
+
+  if (method === 'GET' && path === '/api/discover/focus-areas') {
+    return json(res, 200, { focusAreas: FOCUS_AREAS });
+  }
+
+  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/discover$/))) {
+    const site = getState().sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    if (site.discover?.state === 'running') return json(res, 409, { error: 'discovery already running for this site' });
+    const body = await readBody(req);
+    const focus = Array.isArray(body.focus) ? body.focus.map(String) : [];
+    startDiscovery(site.id, { focus });
+    return json(res, 202, { ok: true, siteId: site.id });
+  }
+
+  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/journeys\/accept$/))) {
+    const site = getState().sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    const body = await readBody(req);
+    const result = acceptProposals(site.id, body.accept);
+    if (result.error) return json(res, 400, { error: result.error });
+    return json(res, 201, { created: result.created.length, skipped: result.skipped, journeys: result.created });
   }
 
   if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/scan$/))) {
@@ -360,12 +395,19 @@ function validBearer(header) {
 function makeSite(body) {
   return {
     id: nextId('site-'),
-    url: String(body.url), repo: String(body.repo), suiteId: String(body.suiteId),
+    url: String(body.url),
+    // Optional on the quick-scan path: a journey-scored site has no AQA suite,
+    // and a site with no repo is audit-only (no source mapping, no auto-fix).
+    repo: body.repo ? String(body.repo) : null,
+    suiteId: body.suiteId ? String(body.suiteId) : null,
+    rulesetId: body.rulesetId ? String(body.rulesetId) : null,
+    mode: body.mode === 'quick' ? 'quick' : 'full',
     repoPath: body.repoPath ? String(body.repoPath) : null,
     testId: body.testId ? String(body.testId) : null,
     status: 'onboarding', critical: 0, total: 0, trend: [], lastRun: null,
     framework: body.framework || 'unknown',
     flows: [],
+    discover: null,
   };
 }
 

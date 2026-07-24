@@ -60,7 +60,100 @@ export async function runJourney(journey) {
   };
 }
 
-async function executeStep(page, step, journey) {
+// Walk the steps without scoring anything. Used to validate a proposed journey
+// before it is saved: a selector the discovery agent invented but that does not
+// exist on the page should be caught here, not on the first real run. Needs no
+// AQA credentials, so discovery works in demo mode.
+export async function dryRunJourney(journey) {
+  const startedAt = Date.now();
+  const steps = [];
+  let failure = null;
+
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext({ viewport: journey.viewport || { width: 1440, height: 900 } });
+    const page = await context.newPage();
+
+    for (const [index, step] of (journey.steps || []).entries()) {
+      const t0 = Date.now();
+      try {
+        await executeStep(page, step, journey, true);
+        steps.push({ index, type: step.type, ms: Date.now() - t0, status: 'ok' });
+      } catch (err) {
+        const status = step.optional ? 'skipped' : 'error';
+        steps.push({ index, type: step.type, ms: Date.now() - t0, status, error: err.message });
+        if (!step.optional) {
+          failure = `step ${index + 1} (${step.type}) failed: ${err.message}`;
+          break;
+        }
+      }
+    }
+  } finally {
+    await browser.close().catch(() => {});
+  }
+
+  return { ok: !failure, error: failure, ms: Date.now() - startedAt, steps };
+}
+
+// A bounded structural summary of what a user can interact with on a page.
+// Feeds journey discovery: small enough to hand to a model, concrete enough to
+// build real selectors from. Deliberately not the whole DOM.
+export async function inspectPage({ url, viewport }) {
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext({ viewport: viewport || { width: 1440, height: 900 } });
+    const page = await context.newPage();
+    await page.goto(url, { timeout: DEFAULT_STEP_TIMEOUT_MS, waitUntil: 'domcontentloaded' });
+    const summary = await page.evaluate(collectStructure);
+    return { ok: true, url: page.url(), ...summary };
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
+// Runs inside the page. Prefers stable hooks (id, data-testid) over brittle
+// nth-of-type paths so the selectors handed to discovery survive a redeploy.
+function collectStructure() {
+  const sel = (el) => {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const testid = el.getAttribute('data-testid');
+    if (testid) return `[data-testid="${testid}"]`;
+    const aria = el.getAttribute('aria-label');
+    if (aria) return `${el.tagName.toLowerCase()}[aria-label="${aria}"]`;
+    const cls = (el.getAttribute('class') || '').trim().split(/\s+/).filter(Boolean)[0];
+    if (cls) return `${el.tagName.toLowerCase()}.${CSS.escape(cls)}`;
+    const parent = el.parentElement;
+    if (!parent) return el.tagName.toLowerCase();
+    const sibs = [...parent.children].filter((c) => c.tagName === el.tagName);
+    const i = sibs.indexOf(el) + 1;
+    return `${el.tagName.toLowerCase()}:nth-of-type(${i})`;
+  };
+  const txt = (el) => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const take = (nodes, n, map) => [...nodes].slice(0, n).map(map);
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+
+  return {
+    title: document.title || '',
+    nav: take([...document.querySelectorAll('nav, [role="navigation"]')].filter(visible), 8,
+      (el) => ({ selector: sel(el), text: txt(el).slice(0, 120) })),
+    buttons: take([...document.querySelectorAll('button, [role="button"]')].filter(visible), 25,
+      (el) => ({ selector: sel(el), text: txt(el) })),
+    links: take([...document.querySelectorAll('a[href]')].filter((el) => visible(el) && txt(el)), 40,
+      (el) => ({ selector: sel(el), text: txt(el), href: el.getAttribute('href') })),
+    inputs: take([...document.querySelectorAll('input, textarea, select')].filter(visible), 20,
+      (el) => ({
+        selector: sel(el), type: el.getAttribute('type') || el.tagName.toLowerCase(),
+        name: el.getAttribute('name') || null, placeholder: el.getAttribute('placeholder') || null,
+      })),
+    landmarks: take([...document.querySelectorAll('main, header, footer, [role="main"], [role="search"]')].filter(visible), 10,
+      (el) => ({ selector: sel(el), tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || null })),
+  };
+}
+
+async function executeStep(page, step, journey, dry = false) {
   const timeout = step.timeoutMs || DEFAULT_STEP_TIMEOUT_MS;
   switch (step.type) {
     case 'goto':
@@ -83,6 +176,12 @@ async function executeStep(page, step, journey) {
       else await page.waitForTimeout(step.ms);
       return null;
     case 'snapshot':
+      // A dry run proves the snapshot point is reachable without spending an
+      // AQA evaluation on it.
+      if (dry) {
+        if (step.context) await page.waitForSelector(step.context, { timeout });
+        return null;
+      }
       return snapshot(page, step, journey);
     default:
       throw new Error(`unknown step type "${step.type}"`);

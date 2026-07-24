@@ -220,7 +220,9 @@ function askForToken() {
   });
 }
 
-function hostOf(url) { return String(url || '').replace('https://', ''); }
+// Quick-scan sites are often http:// (localhost, preview builds), so strip
+// either scheme rather than just https.
+function hostOf(url) { return String(url || '').replace(/^https?:\/\//, ''); }
 
 // The runner is a separate process, so its health is not in /api/state. Fetch it
 // lazily while a view that needs it is on screen, cache it, and re-render when it
@@ -369,7 +371,7 @@ function viewDashboard() {
       <thead><tr><th>Site</th><th>Status</th><th>Critical</th><th>Total</th><th>Trend</th><th>Last run</th></tr></thead>
       <tbody>${sites.map((x) => `
         <tr class="click" data-go="#/site/${x.id}">
-          <td>${esc(x.url.replace('https://', ''))}</td>
+          <td>${esc(hostOf(x.url))}</td>
           <td>${siteChip(x)}</td>
           <td class="tnum">${x.critical ?? '-'}</td>
           <td class="tnum">${x.total ?? '-'}</td>
@@ -387,9 +389,9 @@ function viewSites() {
       <thead><tr><th>Site</th><th>Repo</th><th>Suite</th><th>Framework</th><th>Status</th></tr></thead>
       <tbody>${S.sites.map((x) => `
         <tr class="click" data-go="#/site/${x.id}">
-          <td>${esc(x.url.replace('https://', ''))}</td>
-          <td class="mono">${esc(x.repo)}</td>
-          <td class="mono">${esc(x.suiteId)}</td>
+          <td>${esc(hostOf(x.url))}</td>
+          <td class="mono">${x.repo ? esc(x.repo) : '<span style="color:var(--ink-faint)">-</span>'}</td>
+          <td class="mono">${x.suiteId ? esc(x.suiteId) : '<span class="chip good">quick</span>'}</td>
           <td>${esc(x.framework)}</td>
           <td>${siteChip(x)}</td>
         </tr>`).join('')}
@@ -400,6 +402,7 @@ function viewSites() {
 function viewSite(r) {
   const site = S.sites.find((x) => x.id === r.id);
   if (!site) return `<div class="empty">Site not found.</div>`;
+  if (r.sub === 'proposed') return viewProposed(site);
   const causes = S.causes.filter((c) => c.siteId === site.id);
   const urlFlows = site.flows.filter((f) => f.type === 'URL').length;
   const clickFlows = site.flows.filter((f) => f.type === 'Click-state').length;
@@ -408,14 +411,17 @@ function viewSite(r) {
   const scanning = site.scanState === 'running';
 
   return `
-    <div class="crumb"><a href="#/sites">Sites</a> / ${esc(site.url.replace('https://', ''))}</div>
+    <div class="crumb"><a href="#/sites">Sites</a> / ${esc(hostOf(site.url))}</div>
     <div class="topline">
-      <h1>${esc(site.url.replace('https://', ''))} <span class="chip acc">Suite ${esc(site.suiteId)}</span> ${siteChip(site)}</h1>
+      <h1>${esc(hostOf(site.url))} ${site.suiteId
+        ? `<span class="chip acc">Suite ${esc(site.suiteId)}</span>`
+        : `<span class="chip acc">Quick scan</span>`} ${siteChip(site)}</h1>
       <span><button class="btn ghost" data-act="scan" data-id="${site.id}"${scanning ? ' disabled aria-busy="true"' : ''}>${
         scanning ? '<span class="spin"></span>Scanning&hellip;' : 'Run tests'
       }</button></span>
     </div>
     ${scanProgress(site)}
+    ${discoverProgress(site)}
     ${site.scanError && !scanning ? `<div class="err" style="margin:-4px 0 12px">Last scan failed: ${esc(site.scanError)}</div>` : ''}
     ${site.lastDiff && !scanning ? `<div class="hint" style="margin:-4px 0 12px">Last scan: ${esc(String(site.lastDiff.new.length))} new, ${esc(String(site.lastDiff.fixed.length))} fixed, ${esc(String(site.lastDiff.persisting.length))} persisting</div>` : ''}
     <div class="cards">
@@ -454,6 +460,91 @@ function viewSite(r) {
     ${siteJourneys(site)}`;
 }
 
+// Discovery has real stages we can name honestly (inspect -> propose ->
+// validate), but no percentage, so the bar stays indeterminate like the others.
+const DISCOVER_STAGES = {
+  inspecting: 'Loading the page and reading its structure',
+  proposing: 'Proposing journeys',
+  validating: 'Validating selectors in a real browser',
+};
+
+function discoverProgress(site) {
+  const d = site.discover;
+  if (!d || d.state !== 'running') return '';
+  const elapsed = d.startedAt ? fmtDuration(Date.now() - d.startedAt) : null;
+  return `
+    <div class="panel scanbox">
+      <div class="sb-top">
+        <span class="sb-title"><span class="spin"></span>${esc(DISCOVER_STAGES[d.stage] || 'Discovering journeys')}</span>
+        <span class="sb-meta">${elapsed ? `elapsed ${esc(elapsed)}` : ''}</span>
+      </div>
+      <div class="prog indet" role="progressbar" aria-label="Discovering journeys, duration unknown"><i></i></div>
+      <div class="sb-note">A real browser is inspecting ${esc(hostOf(site.url))}${d.focus?.length ? `, focused on ${esc(d.focus.join(', '))}` : ''}. Nothing is saved until you review the proposals.</div>
+    </div>`;
+}
+
+// Review screen for discovered journeys. Everything here is a proposal: nothing
+// has been written to the site until it is accepted.
+function viewProposed(site) {
+  const d = site.discover || {};
+  const proposals = d.proposals || [];
+  const running = d.state === 'running';
+
+  return `
+    <div class="crumb"><a href="#/sites">Sites</a> / <a href="#/site/${site.id}">${esc(hostOf(site.url))}</a> / Proposed journeys</div>
+    <div class="topline">
+      <h1>Proposed journeys${proposals.length ? ` <span class="chip acc">${proposals.length} suggested</span>` : ''}</h1>
+      <span>
+        <a class="btn ghost small" href="#/journey/new" style="margin-right:6px">+ Add manually</a>
+        <button class="btn" data-act="acceptproposals" data-id="${site.id}"${running || !proposals.length ? ' disabled' : ''}>Accept selected</button>
+      </span>
+    </div>
+    ${discoverProgress(site)}
+    ${d.error ? `<div class="err" style="margin:-4px 0 12px">Discovery failed: ${esc(d.error)}</div>` : ''}
+    ${!running && !proposals.length ? `
+      <div class="empty">No proposals yet.
+        <button class="btn small" data-act="discover" data-id="${site.id}" style="margin-left:8px">Discover journeys</button>
+      </div>`
+    : `
+      <div class="hint" style="margin:-4px 0 12px">An agent inspected ${esc(hostOf(site.url))} and suggested these. Untick anything you do not want, then accept. You can edit steps afterwards.</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th style="width:44px">Use</th><th>Journey</th><th>Focus</th><th>Proposed steps</th><th>Checked</th></tr></thead>
+        <tbody>${proposals.map((p, i) => {
+          const dr = p.dryRun;
+          const check = !dr ? '<span class="chip idle">pending</span>'
+            : dr.ok ? '<span class="chip good">selectors ok</span>'
+            : `<span class="chip crit" title="${esc(dr.error || '')}">selector failed</span>`;
+          return `
+            <tr>
+              <td><input type="checkbox" class="prop-pick" data-idx="${i}"${dr?.ok !== false ? ' checked' : ''} aria-label="Use ${esc(p.name)}"></td>
+              <td>${esc(p.name)}${p.source === 'auto' || p.source ? `<span class="autob">${esc(p.source)}</span>` : ''}</td>
+              <td>${esc(p.focus || '-')}</td>
+              <td class="stepprev">${esc(stepPreview(p.steps))}</td>
+              <td>${check}</td>
+            </tr>`;
+        }).join('')}</tbody>
+      </table></div>`}`;
+}
+
+// One-line human summary of a step list, so the review table shows what a
+// journey actually does without opening the editor.
+function stepPreview(steps = []) {
+  return steps.map((s) => {
+    if (s.type === 'goto') return `goto ${shortUrl(s.url)}`;
+    if (s.type === 'fill') return `fill ${s.selector}`;
+    if (s.type === 'snapshot') return `snapshot "${s.label}"${s.context ? ` in ${s.context}` : ''}`;
+    if (s.selector) return `${s.type} ${s.selector}`;
+    if (s.networkIdle) return 'waitFor networkIdle';
+    if (s.ms) return `waitFor ${s.ms}ms`;
+    return s.type;
+  }).join('  →  ');
+}
+
+function shortUrl(u) {
+  const s = String(u || '');
+  try { return new URL(s).pathname || '/'; } catch { return s; }
+}
+
 // Journeys scoped to this site, shown below the suite coverage. Journeys are the
 // evaluate-path supplement to the site's AQA suite (cart/menu/login flows).
 function siteJourneys(site) {
@@ -461,7 +552,11 @@ function siteJourneys(site) {
   return `
     <div class="topline" style="margin:26px 0 10px">
       <h2 style="margin:0">Journeys</h2>
-      <a class="btn ghost small" href="#/journey/new">+ New journey</a>
+      <span>
+        ${(site.discover?.proposals || []).length ? `<a class="btn small" href="#/site/${site.id}/proposed" style="margin-right:6px">Review ${site.discover.proposals.length} proposed</a>` : ''}
+        <button class="btn ghost small" data-act="discover" data-id="${site.id}"${site.discover?.state === 'running' ? ' disabled aria-busy="true"' : ''} style="margin-right:6px">${(site.discover?.proposals || []).length || site.discover?.finishedAt ? 'Re-discover' : 'Discover journeys'}</button>
+        <a class="btn ghost small" href="#/journey/new">+ New journey</a>
+      </span>
     </div>
     ${journeys.length ? `
       <div class="tbl-wrap"><table>
@@ -485,24 +580,94 @@ function siteJourneys(site) {
     : `<div class="empty">No journeys for this site yet. <a href="#/journey/new">Add one</a> to score a cart, menu, or login flow.</div>`}`;
 }
 
-function viewOnboard() {
+// Two doors in. The suite path ("full") is the original contract; the quick path
+// needs only a URL because evaluate scores a DOM we captured ourselves, and it
+// leads straight into journey discovery.
+function viewOnboard(r) {
+  if (r.id === 'quick') return viewOnboardQuick();
+  if (r.id === 'full') return viewOnboardFull();
   return `
     <div class="crumb"><a href="#/sites">Sites</a> / New</div>
     <div class="topline"><h1>Onboard a site</h1></div>
+    <div class="choose">
+      <div class="pathcard rec">
+        <div class="pc-top"><div class="pc-ico">&#9733;</div><div><div class="pc-sub">Recommended</div><h3>Full audit + auto-fix</h3></div></div>
+        <p>Connect your AQA suite. We scan every flow, map issues to your repo, and let a Cursor agent open fix PRs.</p>
+        <ul><li>Needs an AQA <b>suite + test ID</b></li><li>Covers the whole suite</li><li>Auto-fix &rarr; PR &rarr; verify</li></ul>
+        <a class="btn" href="#/onboard/full">Set up full audit</a>
+      </div>
+      <div class="pathcard alt">
+        <div class="pc-top"><div class="pc-ico">&#9889;</div><div><div class="pc-sub">Quick</div><h3>Quick scan</h3></div></div>
+        <p>Just paste a URL. We drive a real browser, propose journeys for you, and score the captured pages &mdash; no suite setup in the AQA hub.</p>
+        <ul><li>Only a <b>URL</b> needed</li><li>Reaches localhost &amp; login-gated pages</li><li>Repo optional (unlocks auto-fix)</li></ul>
+        <a class="btn ghost" href="#/onboard/quick">Run a quick scan</a>
+      </div>
+    </div>`;
+}
+
+function viewOnboardQuick() {
+  return `
+    <div class="crumb"><a href="#/onboard">Onboard</a> / Quick scan</div>
+    <div class="topline"><h1>Quick scan <span class="chip good">no suite needed</span></h1></div>
+    <form class="form" id="quick-form" style="max-width:660px">
+      <div class="jrow2">
+        <div class="field"><label for="q-url">Website URL</label>
+          <input id="q-url" name="url" placeholder="https://fr.florga.com" autocomplete="off"></div>
+        <div class="field"><label for="q-ruleset">Ruleset</label>
+          <select id="q-ruleset" name="rulesetId">
+            <option value="WCAG21AA">WCAG 2.1 AA</option>
+            <option value="WCAG22AA">WCAG 2.2 AA</option>
+            <option value="WCAG21A">WCAG 2.1 A</option>
+          </select></div>
+      </div>
+      <div class="field"><label for="q-repopath">Local repo folder <span class="lblx">optional - lets the agent read your code for better selectors, and maps issues to files</span></label>
+        <input id="q-repopath" name="repoPath" placeholder="C:\\repos\\storefront" autocomplete="off" spellcheck="false">
+        <div class="hint">Absolute path to the repo on this machine.</div></div>
+      <div class="field"><label for="q-repo">GitHub repo <span class="lblx">optional - owner/name, only used to open fix PRs</span></label>
+        <input id="q-repo" name="repo" placeholder="florga/storefront" autocomplete="off"></div>
+      <label class="flabel">Focus areas <span class="lblx">guide the agent (optional)</span></label>
+      <div class="fchips" id="q-focus">
+        ${['Home', 'Mega-menu', 'Add to cart', 'Search', 'Login', 'Checkout'].map((f, i) => `
+          <label class="fc"><input type="checkbox" value="${esc(f)}"${i < 3 ? ' checked' : ''}> ${esc(f)}</label>`).join('')}
+      </div>
+      <div class="hint">We visit the URL, read the page, and propose journeys for these areas. You review before anything runs.</div>
+      <div class="err" id="quick-err" role="alert"></div>
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
+        <a class="btn ghost" href="#/onboard">Back</a>
+        <button class="btn" type="submit">Scan &amp; discover journeys</button>
+      </div>
+    </form>`;
+}
+
+function viewOnboardFull() {
+  return `
+    <div class="crumb"><a href="#/onboard">Onboard</a> / Full audit</div>
+    <div class="topline"><h1>Full audit setup <span class="chip acc">Recommended</span></h1></div>
     <form class="form" id="onboard-form">
       <div class="field">
         <label for="f-url">Website URL</label>
         <input id="f-url" name="url" placeholder="https://shop.example.com" autocomplete="off">
       </div>
       <div class="field">
-        <label for="f-repo">Repository (owner/name)</label>
-        <input id="f-repo" name="repo" placeholder="acme/shop-frontend" autocomplete="off">
+        <label for="f-repopath">Local repo folder <span class="lblx">read for source mapping and better journey selectors</span></label>
+        <input id="f-repopath" name="repoPath" placeholder="C:\\repos\\shop-frontend" autocomplete="off" spellcheck="false">
+        <div class="hint">Absolute path to the repo on this machine.</div>
       </div>
       <div class="field">
-        <label for="f-suite">AQA suite ID</label>
-        <input id="f-suite" name="suiteId" placeholder="TS35353" autocomplete="off">
-        <div class="hint">Suite must already exist in AQA - the public API cannot create suites.</div>
+        <label for="f-repo">GitHub repo (owner/name) <span class="lblx">used to open fix PRs</span></label>
+        <input id="f-repo" name="repo" placeholder="acme/shop-frontend" autocomplete="off">
       </div>
+      <div class="jrow2">
+        <div class="field">
+          <label for="f-suite">AQA suite ID</label>
+          <input id="f-suite" name="suiteId" placeholder="TS35353" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="f-test">AQA test ID <span class="lblx">needed to scan</span></label>
+          <input id="f-test" name="testId" placeholder="T90210" autocomplete="off">
+        </div>
+      </div>
+      <div class="hint">Suite and test must already exist in AQA - the public API cannot create them.</div>
       <div class="err" id="onboard-err" role="alert"></div>
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px">
         <a class="btn ghost" href="#/sites">Cancel</a>
@@ -1120,7 +1285,7 @@ function taskCard(t, sel) {
         <b>${esc(t.title)}</b>
         ${t.state === 'failed' ? `<button class="btn small" data-act="retry" data-id="${esc(t.id)}" title="Re-launch the Cursor agent">Retry</button>` : ''}
       </div>
-      <div class="m">${esc(site ? site.url.replace('https://', '') : '')} &middot; ${esc(t.file || 'unmapped')}</div>
+      <div class="m">${esc(site ? hostOf(site.url) : '')} &middot; ${esc(t.file || 'unmapped')}</div>
       ${t.state === 'working' ? `<span class="cursor-tag">&#9670; ${t.agent} agent</span>` : ''}
       ${t.state === 'failed' ? `<span class="chip crit">failed</span>` : ''}
       ${t.state === 'reopened' ? `<span class="chip warn">reopened</span>` : ''}
@@ -1208,6 +1373,19 @@ function bindActions() {
           await api('POST', `/api/journeys/${id}/run`);
           toast('ok', 'Journey run started', 'Progress shows on the journey page.');
         }
+        if (act === 'discover') {
+          await api('POST', `/api/sites/${id}/discover`, { focus: [] });
+          toast('ok', 'Discovering journeys', 'An agent is inspecting the site. Nothing is saved until you review.');
+          location.hash = `#/site/${id}/proposed`;
+        }
+        if (act === 'acceptproposals') {
+          const picks = [...document.querySelectorAll('.prop-pick')]
+            .filter((c) => c.checked).map((c) => Number(c.dataset.idx));
+          if (!picks.length) { throw new Error('Select at least one journey to accept.'); }
+          const r = await api('POST', `/api/sites/${id}/journeys/accept`, { accept: picks });
+          toast('ok', `${r.created} journey(s) accepted`, r.skipped?.length ? `${r.skipped.length} skipped (duplicate or invalid).` : 'Run them from the Journeys screen.');
+          location.hash = '#/journeys';
+        }
         if (act === 'deletejourney') {
           if (!window.confirm('Delete this journey? Open causes it found are removed; any with a task or PR are kept.')) {
             el.disabled = false; el.removeAttribute('aria-busy'); el.innerHTML = label; return;
@@ -1246,6 +1424,33 @@ function bindActions() {
       location.hash = `#/site/${site.id}`;
     } catch (err) {
       errBox.textContent = err.message;
+    }
+  });
+
+  // Quick scan: create the site on the evaluate path, then immediately kick off
+  // journey discovery and drop the user on the review screen.
+  const quick = document.getElementById('quick-form');
+  if (quick) quick.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const errBox = document.getElementById('quick-err');
+    errBox.textContent = '';
+    const data = Object.fromEntries(new FormData(quick));
+    if (!data.url) { errBox.textContent = 'Enter a website URL.'; return; }
+    const focus = [...document.querySelectorAll('#q-focus input:checked')].map((c) => c.value);
+    const btn = quick.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    btn.setAttribute('aria-busy', 'true');
+    btn.innerHTML = '<span class="spin"></span>Starting&hellip;';
+    try {
+      const site = await api('POST', '/api/sites', { ...data, mode: 'quick' });
+      await api('POST', `/api/sites/${site.id}/discover`, { focus });
+      await refresh();
+      location.hash = `#/site/${site.id}/proposed`;
+    } catch (err) {
+      errBox.textContent = err.message;
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+      btn.textContent = 'Scan & discover journeys';
     }
   });
 

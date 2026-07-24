@@ -10,7 +10,7 @@
 // The control plane finds it via RUNNER_URL (default http://localhost:4174).
 
 import { createServer } from 'node:http';
-import { runJourney } from './journey-run.mjs';
+import { runJourney, dryRunJourney, inspectPage } from './journey-run.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 
 const PORT = Number(process.env.RUNNER_PORT) || 4174;
@@ -44,6 +44,26 @@ const server = createServer(async (req, res) => {
       if (!aqa.isReal) return json(res, 400, { error: 'AQA credentials not set (AQA_TEAMSLUG, AQA_API_KEY); evaluate needs real credentials' });
       const result = await enqueue(() => runJourney(journey));
       console.log(`run ${journey.id || journey.name}: ${result.ok ? 'ok' : 'failed'} in ${result.ms} ms, ${result.snapshots.length} snapshot(s)`);
+      return json(res, 200, result);
+    }
+
+    // Discovery support. Neither endpoint scores anything, so both work without
+    // AQA credentials: a user can discover and validate journeys in demo mode
+    // and only needs real credentials to actually run them.
+    if (req.method === 'POST' && req.url === '/inspect') {
+      const body = await readBody(req);
+      if (!body?.url) return json(res, 400, { error: 'body must be {url}' });
+      const result = await enqueue(() => inspectPage({ url: body.url, viewport: body.viewport }));
+      console.log(`inspect ${body.url}: ${result.links?.length ?? 0} link(s), ${result.buttons?.length ?? 0} button(s)`);
+      return json(res, 200, result);
+    }
+
+    if (req.method === 'POST' && req.url === '/dryrun') {
+      const body = await readBody(req);
+      const journey = body?.journey;
+      if (!journey?.steps?.length) return json(res, 400, { error: 'body must be {journey} with a non-empty steps array' });
+      const result = await enqueue(() => dryRunJourney(journey));
+      console.log(`dryrun ${journey.name || journey.id}: ${result.ok ? 'ok' : 'failed'} in ${result.ms} ms`);
       return json(res, 200, result);
     }
 

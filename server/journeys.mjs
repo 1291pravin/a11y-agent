@@ -55,16 +55,19 @@ export async function runnerHealth() {
   }
 }
 
-async function callRunner(journey) {
-  const res = await fetch(`${RUNNER_URL}/run`, {
+// Generic runner call. Journey discovery (journey-propose.mjs) drives /inspect
+// and /dryrun through the same client so there is one place that knows where the
+// runner lives and how its errors surface.
+export async function callRunner(path, body, timeoutMs = RUNNER_TIMEOUT_MS) {
+  const res = await fetch(`${RUNNER_URL}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ journey }),
-    signal: AbortSignal.timeout(RUNNER_TIMEOUT_MS),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
   });
-  const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(body?.error || `runner returned HTTP ${res.status}`);
-  return body;
+  const parsed = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(parsed?.error || `runner returned HTTP ${res.status}`);
+  return parsed;
 }
 
 // ── Run pipeline ────────────────────────────────────────────────────────────
@@ -94,7 +97,7 @@ export function startJourneyRun(journeyId) {
 async function runJourney(journeyId) {
   const journey = findJourney(journeyId);
   if (!journey) throw new Error('journey not found');
-  const result = await callRunner(journey);
+  const result = await callRunner('/run', { journey });
 
   // A journey that aborted part way through saw only part of the site. Folding
   // that into the cause set would read as "the rest got fixed", so a failed run
