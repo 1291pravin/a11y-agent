@@ -179,6 +179,58 @@ tr.click:hover td { background: var(--accent-soft); }
 .field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
 .hint { font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
 .err { font-size: 12px; color: var(--crit); margin-top: 6px; }
+.field select {
+  width: 100%; border: 1px solid var(--line); background: var(--bg); border-radius: 9px;
+  padding: 10px 12px; font-size: 13.5px; color: var(--ink); font-family: inherit;
+}
+.field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+
+/* ── journeys ───────────────────────────── */
+/* Runner health strip: the runner is a separate process, so this states plainly
+   whether a journey can run at all (green ready / amber demo / red offline). */
+.jhealth {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  flex-wrap: wrap; border-left: 4px solid var(--line); margin-bottom: 22px;
+}
+.jhealth .jh-l { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 700; color: var(--ink); }
+.jhealth .jh-d { font-size: 11.5px; color: var(--ink-soft); }
+.jhealth .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+
+.jrow2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 640px) { .jrow2 { grid-template-columns: 1fr; } }
+
+/* Step rows in the journey editor: a type selector + reorder/remove tools, then
+   per-type fields that swap in when the type changes. */
+.step-row { border: 1px solid var(--line); background: var(--bg); border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; }
+.step-row .sr-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.step-row .sr-idx {
+  width: 22px; height: 22px; border-radius: 6px; background: var(--accent); color: #fff;
+  font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: 0 0 auto;
+}
+.step-row .sr-grow { flex: 1; }
+.step-row .sr-grow select { width: 100%; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 7px 10px; font-size: 12.5px; color: var(--ink); font-family: inherit; }
+.step-row .sr-tools { display: flex; gap: 4px; }
+.iconbtn {
+  width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--ink-soft); font-size: 13px; line-height: 1;
+  display: grid; place-items: center;
+}
+.iconbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.iconbtn:disabled { opacity: 0.4; cursor: not-allowed; }
+.iconbtn.danger { color: var(--crit); }
+.iconbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.srf { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.srf.one { grid-template-columns: 1fr; }
+.srf .field { margin: 0; }
+.optcheck { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); margin-top: 8px; }
+.optcheck input { width: auto; }
+.addbar { display: flex; gap: 7px; flex-wrap: wrap; margin: 6px 0 16px; }
+.addbar .btn.small.ghost { border-color: var(--line); color: var(--ink-soft); }
+.tag2 {
+  display: inline-block; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 2px 8px; border-radius: 6px;
+  background: var(--surface-2); color: var(--ink-faint); border: 1px solid var(--line);
+}
 
 /* ── kanban ─────────────────────────────── */
 .kanban-wrap { overflow-x: auto; }

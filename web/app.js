@@ -8,6 +8,14 @@ let selectedTask = null; // task id shown in the log pane
 let token = localStorage.getItem('a11yAgentToken') || ''; // M5 admin token
 let batchResult = null;  // last CSV batch response, rendered on the onboard screen
 
+let draft = null;        // in-progress journey in the editor (survives the poll)
+let runnerH = null;      // last GET /api/runner/health payload
+let runnerHAt = 0;       // when we last fetched runner health (throttle)
+
+// Mirror of server/journey-model.mjs STEP_TYPES; the SPA has no build step so it
+// cannot import, and the two lists must stay in sync.
+const STEP_TYPES = ['goto', 'click', 'fill', 'hover', 'waitFor', 'snapshot'];
+
 let booted = false;      // first successful fetch has landed (skeleton until then)
 let lastGoodAt = null;   // timestamp of the newest state we hold
 let pollMs = 3000;       // current poll interval; backs off while disconnected
@@ -42,6 +50,7 @@ async function refresh() {
     if (resetBtn) resetBtn.textContent = S.mode.aqa === 'real' ? 'Sync from AQA' : 'Reset demo data';
     render();
     announceTransitions();
+    maybeFetchRunnerHealth();
   } catch (err) {
     // A dropped poll must not wipe the screen: keep the last good state on
     // display, label it stale in the banner, and back off so a downed server
@@ -97,6 +106,7 @@ function announceTransitions() {
     next[`scan:${site.id}`] = site.scanState === 'running' ? 'running' : 'idle';
   }
   for (const t of S.tasks) next[`task:${t.id}`] = t.state;
+  for (const j of (S.journeys || [])) next[`jrun:${j.id}`] = j.runState === 'running' ? 'running' : 'idle';
 
   const msgs = [];
   for (const [key, value] of Object.entries(next)) {
@@ -116,6 +126,16 @@ function announceTransitions() {
     if (kind === 'task') {
       const t = S.tasks.find((x) => x.id === id);
       msgs.push(`Task ${t?.title || id} is now ${value}`);
+    }
+    if (kind === 'jrun') {
+      const j = (S.journeys || []).find((x) => x.id === id);
+      if (value === 'running') msgs.push(`Journey ${j?.name || id} run started`);
+      else {
+        const lr = j?.lastRun;
+        msgs.push(lr && !lr.ok
+          ? `Journey ${j?.name || id} run failed: ${lr.error || ''}`
+          : `Journey ${j?.name || id} run complete${lr?.diff ? `: ${lr.diff.new.length} new, ${lr.diff.fixed.length} fixed` : ''}`);
+      }
     }
   }
   announced = next;
@@ -202,6 +222,32 @@ function askForToken() {
 
 function hostOf(url) { return String(url || '').replace('https://', ''); }
 
+// The runner is a separate process, so its health is not in /api/state. Fetch it
+// lazily while a view that needs it is on screen, cache it, and re-render when it
+// lands. Throttled so it does not fire on every 3s poll.
+async function maybeFetchRunnerHealth() {
+  const v = route().view;
+  if (v !== 'journeys' && v !== 'journey' && v !== 'settings') return;
+  if (Date.now() - runnerHAt < 9000) return;
+  runnerHAt = Date.now();
+  try {
+    const res = await fetch('/api/runner/health');
+    runnerH = await res.json();
+  } catch (err) {
+    runnerH = { ok: false, error: err.message };
+  }
+  render();
+}
+
+function fmtAgo(ts) {
+  if (!ts) return 'never';
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
 function fmtDuration(ms) {
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 60) return `${s}s`;
@@ -226,12 +272,16 @@ function render(force) {
   const r = route();
   document.querySelectorAll('#nav a').forEach((a) => {
     const v = a.dataset.view;
-    a.classList.toggle('on', v === r.view || (v === 'sites' && r.view === 'site'));
+    a.classList.toggle('on', v === r.view
+      || (v === 'sites' && r.view === 'site')
+      || (v === 'journeys' && r.view === 'journey'));
   });
   const views = {
     dashboard: viewDashboard,
     sites: viewSites,
     site: viewSite,
+    journeys: viewJourneys,
+    journey: viewJourney,
     onboard: viewOnboard,
     tasks: viewTasks,
     prs: viewPrs,
@@ -288,7 +338,13 @@ function renderSkeleton() {
     <span class="sr-only">Loading dashboard</span>`;
 }
 
-window.addEventListener('hashchange', () => render(true));
+window.addEventListener('hashchange', () => {
+  render(true);
+  // Landing on a journeys/settings view should show fresh runner health, not a
+  // value cached from minutes ago on another screen.
+  runnerHAt = 0;
+  maybeFetchRunnerHealth();
+});
 
 // ── screens ─────────────────────────────────────────────────────────────────
 
@@ -394,7 +450,39 @@ function viewSite(r) {
           <td>${causeAction(c)}</td>
         </tr>`).join('') : `<tr><td colspan="5" class="empty">No open violations.</td></tr>`}
       </tbody>
-    </table></div>`;
+    </table></div>
+    ${siteJourneys(site)}`;
+}
+
+// Journeys scoped to this site, shown below the suite coverage. Journeys are the
+// evaluate-path supplement to the site's AQA suite (cart/menu/login flows).
+function siteJourneys(site) {
+  const journeys = (S.journeys || []).filter((j) => j.siteId === site.id);
+  return `
+    <div class="topline" style="margin:26px 0 10px">
+      <h2 style="margin:0">Journeys</h2>
+      <a class="btn ghost small" href="#/journey/new">+ New journey</a>
+    </div>
+    ${journeys.length ? `
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Journey</th><th>Steps</th><th>Last run</th><th>Result</th><th>Action</th></tr></thead>
+        <tbody>${journeys.map((j) => {
+          const running = j.runState === 'running';
+          const lr = j.lastRun;
+          const last = running ? '<span class="chip run">running</span>' : lr ? esc(fmtAgo(lr.at)) : 'never';
+          const result = lr && !lr.ok ? '<span class="chip crit">failed</span>'
+            : lr && lr.diff ? (lr.diff.new.length ? `<span class="chip crit">${lr.diff.new.length} new</span>` : '<span class="chip good">clean</span>')
+            : '<span class="chip idle">not run</span>';
+          return `<tr>
+            <td><a href="#/journey/${j.id}">${esc(j.name)}</a></td>
+            <td class="tnum">${(j.steps || []).length}</td>
+            <td>${last}</td>
+            <td>${result}</td>
+            <td><button class="btn small" data-act="runjourney" data-id="${j.id}"${running ? ' disabled aria-busy="true"' : ''}>Run</button></td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table></div>`
+    : `<div class="empty">No journeys for this site yet. <a href="#/journey/new">Add one</a> to score a cart, menu, or login flow.</div>`}`;
 }
 
 function viewOnboard() {
@@ -527,6 +615,9 @@ function viewSettings() {
         <tr><td>Cursor Background Agents</td>
           <td>${modeChip(S.mode.cursor)}</td>
           <td>Set <span class="mono">CURSOR_API_KEY</span> env var and restart for real mode.</td></tr>
+        <tr><td>Journey runner (Playwright)</td>
+          <td>${runnerChip()}</td>
+          <td>Separate process on <span class="mono">RUNNER_URL</span>; start with <span class="mono">npm run runner</span>. ${runnerH && !runnerH.ok ? esc(runnerH.error || 'unreachable') : runnerH?.runner ? 'Browser ' + esc(runnerH.runner.browser || 'chromium') + ', AQA ' + esc(runnerH.runner.aqa || '?') : 'Checking&hellip;'}</td></tr>
         <tr><td>GitHub</td>
           <td><span class="chip idle">via cursor</span></td>
           <td>PRs are opened by Cursor agents; direct GitHub App integration lands in M4.</td></tr>
@@ -548,6 +639,385 @@ function viewSettings() {
       <tr><td>PR merge</td><td>${esc(p.prMerge)}</td></tr>
       <tr><td>Run cadence</td><td>${esc(p.runCadence)}</td></tr>
     </tbody></table></div>`;
+}
+
+// ── journeys ────────────────────────────────────────────────────────────────
+
+function viewJourneys() {
+  const journeys = S.journeys || [];
+  return `
+    <div class="topline"><h1>Journeys</h1>
+      <a class="btn" href="#/journey/new">+ New journey</a></div>
+    ${runnerHealthStrip()}
+    ${journeys.length ? `
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Journey</th><th>Site</th><th>Steps</th><th>Last run</th><th>Result</th><th>Action</th></tr></thead>
+        <tbody>${journeys.map(journeyRow).join('')}</tbody>
+      </table></div>`
+    : `<div class="empty">No journeys yet. A journey walks a real browser through a flow (cart, menu, login) and scores each snapshot.<br><a href="#/journey/new">Create your first journey</a>.</div>`}`;
+}
+
+function journeyRow(j) {
+  const site = S.sites.find((x) => x.id === j.siteId);
+  const running = j.runState === 'running';
+  const lr = j.lastRun;
+  const last = running
+    ? '<span class="chip run"><span class="spin"></span> running</span>'
+    : lr ? esc(fmtAgo(lr.at)) : 'never';
+  let result = '<span class="chip idle">not run</span>';
+  if (lr && !lr.ok) result = '<span class="chip crit">failed</span>';
+  else if (lr && lr.diff) result = lr.diff.new.length
+    ? `<span class="chip crit">${lr.diff.new.length} new</span>`
+    : `<span class="chip good">clean</span>`;
+  return `
+    <tr>
+      <td><a href="#/journey/${j.id}">${esc(j.name)}</a></td>
+      <td>${esc(hostOf(site?.url))}</td>
+      <td class="tnum">${(j.steps || []).length}</td>
+      <td>${last}</td>
+      <td>${result}</td>
+      <td><button class="btn small" data-act="runjourney" data-id="${j.id}"${running ? ' disabled aria-busy="true"' : ''}>Run</button></td>
+    </tr>`;
+}
+
+// Green when the runner is up with real AQA, amber in demo mode, red when the
+// separate runner process is unreachable - journeys cannot run without it.
+function runnerHealthStrip() {
+  const h = runnerH;
+  if (!h) return `<div class="panel jhealth idle"><span class="jh-l"><span class="dot" style="background:var(--ink-faint)"></span>Checking runner&hellip;</span></div>`;
+  let cls, color, label, detail;
+  if (!h.ok) {
+    cls = 'crit'; color = 'var(--crit)';
+    label = 'Runner offline';
+    detail = `Start it with <span class="mono">npm run runner</span>. ${esc(h.error || '')}`;
+  } else {
+    const r = h.runner || {};
+    if (r.aqa === 'real') {
+      cls = 'good'; color = 'var(--good)';
+      label = 'Runner ready';
+      detail = `Browser ${esc(r.browser || 'chromium')} &middot; queue ${esc(String(r.queued ?? 0))}`;
+    } else {
+      cls = 'warn'; color = 'var(--warn)';
+      label = 'Runner online &middot; AQA in demo mode';
+      detail = 'Runs score against demo data. Set <span class="mono">AQA_TEAMSLUG</span> + <span class="mono">AQA_API_KEY</span> and restart for real scoring.';
+    }
+  }
+  return `
+    <div class="panel jhealth ${cls}" style="border-left-color:${color}">
+      <span class="jh-l"><span class="dot" style="background:${color}"></span>${label}</span>
+      <span class="jh-d">${detail}</span>
+    </div>`;
+}
+
+function viewJourney(r) {
+  if (r.id === 'new' || r.sub === 'edit') return viewJourneyEditor(r);
+  return viewJourneyDetail(r);
+}
+
+function viewJourneyDetail(r) {
+  const j = (S.journeys || []).find((x) => x.id === r.id);
+  if (!j) return `<div class="empty">Journey not found. <a href="#/journeys">Back to journeys</a>.</div>`;
+  const site = S.sites.find((x) => x.id === j.siteId);
+  const causes = S.causes.filter((c) => c.journeyId === j.id);
+  const running = j.runState === 'running';
+  const lr = j.lastRun;
+  const snaps = lr?.snapshots || [];
+  const violations = causes.reduce((n, c) => n + c.instances, 0);
+
+  return `
+    <div class="crumb"><a href="#/journeys">Journeys</a> / ${esc(j.name)}</div>
+    <div class="topline">
+      <h1>${esc(j.name)} <span class="chip acc">${esc(j.rulesetId)}</span>${running ? ' <span class="chip run">running</span>' : ''}</h1>
+      <span>
+        <a class="btn ghost small" href="#/journey/${j.id}/edit" style="margin-right:6px">Edit</a>
+        <button class="btn ghost small" data-act="deletejourney" data-id="${j.id}" style="margin-right:6px">Delete</button>
+        <button class="btn" data-act="runjourney" data-id="${j.id}"${running ? ' disabled aria-busy="true"' : ''}>${running ? '<span class="spin"></span>Running&hellip;' : 'Run journey'}</button>
+      </span>
+    </div>
+    ${journeyRunProgress(j)}
+    ${lr && !lr.ok && !running ? `<div class="err" style="margin:-4px 0 12px">Last run failed: ${esc(lr.error || 'unknown error')}</div>` : ''}
+    ${lr && lr.ok && lr.diff && !running ? `<div class="hint" style="margin:-4px 0 12px">Last run ${esc(fmtAgo(lr.at))} &middot; ${esc(fmtDuration(lr.ms || 0))} &middot; ${lr.diff.new.length} new, ${lr.diff.fixed.length} fixed, ${lr.diff.persisting.length} persisting</div>` : ''}
+    <div class="cards">
+      ${kpi((j.steps || []).length, 'Steps')}
+      ${kpi(snaps.length, 'Snapshots')}
+      ${kpi(violations, 'Open violations')}
+      ${kpi(lr?.ms ? fmtDuration(lr.ms) : '-', 'Last duration')}
+    </div>
+
+    <h2>Steps</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>#</th><th>Type</th><th>Target</th><th>Status</th><th>ms</th></tr></thead>
+      <tbody>${lr && (lr.steps || []).length ? lr.steps.map((st) => `
+        <tr>
+          <td>${st.index + 1}</td>
+          <td><span class="tag2">${esc(st.type)}</span></td>
+          <td class="mono">${esc(stepTarget(j.steps?.[st.index]))}</td>
+          <td>${stepStatusChip(st.status)}</td>
+          <td class="tnum">${st.ms != null ? st.ms : '-'}</td>
+        </tr>`).join('') : `<tr><td colspan="5" class="empty">Not run yet. Press "Run journey" to walk the flow and score it.</td></tr>`}
+      </tbody>
+    </table></div>
+
+    <h2>Snapshots</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Label</th><th>Context</th><th>Status</th><th>Issues</th><th>ms</th></tr></thead>
+      <tbody>${snaps.length ? snaps.map((sn) => `
+        <tr>
+          <td>${esc(sn.label)}</td>
+          <td class="mono">${sn.context ? esc(sn.context) : '-'}</td>
+          <td>${stepStatusChip(sn.status)}</td>
+          <td class="tnum">${sn.issues}</td>
+          <td class="tnum">${sn.ms != null ? sn.ms : '-'}</td>
+        </tr>`).join('') : `<tr><td colspan="5" class="empty">No snapshots recorded.</td></tr>`}
+      </tbody>
+    </table></div>
+
+    <h2>Violations by root cause (${violations} instances, ${causes.length} causes)</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>Mapped to</th><th>Action</th></tr></thead>
+      <tbody>${causes.length ? causes.map((c) => `
+        <tr>
+          <td>${esc(c.title)}</td>
+          <td><span class="chip ${c.severity === 'critical' ? 'crit' : 'warn'}">${esc(c.rule)}</span></td>
+          <td class="tnum">${c.instances} &middot; ${esc(c.pages[0] === 'all pages' ? 'all pages' : c.pages.length + ' pages')}</td>
+          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped - vendor/CMS</span>'}</td>
+          <td>${causeAction(c)}</td>
+        </tr>`).join('') : `<tr><td colspan="5" class="empty">No open violations.</td></tr>`}
+      </tbody>
+    </table></div>`;
+}
+
+// AQA reports no completion percentage for a journey either, so this is
+// deliberately indeterminate - same rationale as scanProgress.
+function journeyRunProgress(j) {
+  if (j.runState !== 'running') return '';
+  return `
+    <div class="panel scanbox">
+      <div class="sb-top">
+        <span class="sb-title"><span class="spin"></span>Running journey&hellip;</span>
+        <span class="sb-meta">walking steps &amp; scoring snapshots</span>
+      </div>
+      <div class="prog indet" role="progressbar" aria-label="Journey run in progress, duration unknown"><i></i></div>
+      <div class="sb-note">Driving a browser through ${(j.steps || []).length} steps. Results replace the tables below when the run lands. Leaving this page does not stop the run.</div>
+    </div>`;
+}
+
+function stepTarget(s) {
+  if (!s) return '';
+  if (s.type === 'goto') return s.url || '';
+  if (s.type === 'fill') return `${s.selector} = ${s.value}`;
+  if (s.selector) return s.selector;
+  if (s.networkIdle) return 'networkIdle';
+  if (s.ms) return `${s.ms}ms`;
+  if (s.type === 'snapshot') return s.label || '';
+  return '';
+}
+
+function stepStatusChip(status) {
+  const map = { ok: ['good', 'ok'], skipped: ['idle', 'skipped'], error: ['crit', 'failed'] };
+  const [cls, label] = map[status] || ['idle', status || '-'];
+  return `<span class="chip ${cls}">${esc(label)}</span>`;
+}
+
+// ── journey editor (fallback for hand-building / editing proposed steps) ──────
+
+function ensureDraft(r) {
+  const forKey = r.id === 'new' ? 'new' : r.id;
+  if (draft && draft.for === forKey) return;
+  if (r.id === 'new') {
+    // Start URL provides the opening navigation (the model injects a leading
+    // goto from it), so a new journey begins with just the snapshot to score.
+    draft = {
+      for: 'new', id: null,
+      siteId: S.sites[0]?.id || '',
+      name: '', rulesetId: '', startUrl: '', vw: 1440, vh: 900,
+      steps: [{ type: 'snapshot', label: '' }],
+    };
+    return;
+  }
+  const j = (S.journeys || []).find((x) => x.id === r.id);
+  draft = j ? {
+    for: j.id, id: j.id,
+    siteId: j.siteId,
+    name: j.name, rulesetId: j.rulesetId, startUrl: j.startUrl,
+    vw: j.viewport?.width || 1440, vh: j.viewport?.height || 900,
+    steps: (j.steps || []).map((s) => ({ ...s })),
+  } : {
+    for: forKey, id: null, siteId: S.sites[0]?.id || '',
+    name: '', rulesetId: '', startUrl: '', vw: 1440, vh: 900, steps: [],
+  };
+}
+
+function viewJourneyEditor(r) {
+  ensureDraft(r);
+  return `
+    <div id="journey-editor">
+      <div class="crumb"><a href="#/journeys">Journeys</a> / ${draft.id ? 'Edit' : 'New'}</div>
+      <div class="topline"><h1>${draft.id ? 'Edit journey' : 'New journey'}</h1></div>
+      <div class="form" style="max-width:680px">
+        <div class="jrow2">
+          <div class="field"><label>Name</label><input data-jfield="name" value="${esc(draft.name)}" placeholder="Checkout flow"></div>
+          <div class="field"><label>Site</label><select data-jfield="siteId">${S.sites.map((s) => `<option value="${s.id}"${s.id === draft.siteId ? ' selected' : ''}>${esc(hostOf(s.url))}</option>`).join('')}</select></div>
+        </div>
+        <div class="jrow2">
+          <div class="field"><label>Ruleset ID</label><input data-jfield="rulesetId" value="${esc(draft.rulesetId)}" placeholder="WCAG21AA"></div>
+          <div class="field"><label>Start URL</label><input data-jfield="startUrl" value="${esc(draft.startUrl)}" placeholder="https://example.com/cart"></div>
+        </div>
+        <h2>Steps <span class="hint" style="display:inline">(at least one snapshot required)</span></h2>
+        ${draft.steps.map(stepEditorRow).join('')}
+        <div class="addbar">${STEP_TYPES.map((t) => `<button type="button" class="btn small ghost" data-addstep="${t}">+ ${t}</button>`).join('')}</div>
+        <div class="err" id="journey-err" role="alert"></div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:6px">
+          <a class="btn ghost" href="#/journeys">Cancel</a>
+          <button class="btn" type="button" id="journey-save">Save journey</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function stepEditorRow(s, i) {
+  return `
+    <div class="step-row">
+      <div class="sr-head">
+        <span class="sr-idx">${i + 1}</span>
+        <div class="sr-grow"><select data-sidx="${i}" data-sfield="type">${STEP_TYPES.map((t) => `<option${t === s.type ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+        <div class="sr-tools">
+          <button type="button" class="iconbtn" data-idx="${i}" data-move="up" aria-label="Move step up"${i === 0 ? ' disabled' : ''}>&uarr;</button>
+          <button type="button" class="iconbtn" data-idx="${i}" data-move="down" aria-label="Move step down"${i === draft.steps.length - 1 ? ' disabled' : ''}>&darr;</button>
+          <button type="button" class="iconbtn danger" data-removestep="${i}" aria-label="Remove step">&times;</button>
+        </div>
+      </div>
+      ${stepEditorFields(s, i)}
+    </div>`;
+}
+
+function stepEditorFields(s, i) {
+  const fld = (label, field, val, ph) => `<div class="field"><label>${label}</label><input data-sidx="${i}" data-sfield="${field}" value="${esc(val ?? '')}" placeholder="${ph || ''}"></div>`;
+  const opt = () => `<label class="optcheck"><input type="checkbox" data-sidx="${i}" data-sfield="optional"${s.optional ? ' checked' : ''}> optional (skip if missing)</label>`;
+  switch (s.type) {
+    case 'goto':
+      return `<div class="srf one">${fld('URL', 'url', s.url, '/cart or https://…')}</div>`;
+    case 'click':
+    case 'hover':
+      return `<div class="srf one">${fld('Selector', 'selector', s.selector, 'button.checkout')}</div>${opt()}`;
+    case 'fill':
+      return `<div class="srf">${fld('Selector', 'selector', s.selector, '#email')}${fld('Value', 'value', s.value, 'a@b.co')}</div>${opt()}`;
+    case 'waitFor':
+      return `<div class="srf">${fld('Selector', 'selector', s.selector, '.results')}${fld('Timeout ms', 'ms', s.ms, '1000')}</div>
+        <label class="optcheck"><input type="checkbox" data-sidx="${i}" data-sfield="networkIdle"${s.networkIdle ? ' checked' : ''}> wait for network idle</label>
+        <div class="hint">Set exactly one: a selector, network idle, or a millisecond wait.</div>`;
+    case 'snapshot':
+      return `<div class="srf">${fld('Label (required)', 'label', s.label, 'Checkout form')}${fld('Context selector', 'context', s.context, 'main#checkout')}</div>
+        <div class="srf">${fld('Ruleset override', 'rulesetId', s.rulesetId, 'inherit journey ruleset')}<label class="optcheck" style="align-self:center"><input type="checkbox" data-sidx="${i}" data-sfield="manual"${s.manual ? ' checked' : ''}> include manual-review checks</label></div>`;
+    default:
+      return '';
+  }
+}
+
+function bindEditor() {
+  const root = document.getElementById('journey-editor');
+  if (!root) return;
+
+  root.querySelectorAll('[data-jfield]').forEach((el) => {
+    const ev = el.tagName === 'SELECT' ? 'change' : 'input';
+    el.addEventListener(ev, () => { draft[el.dataset.jfield] = el.value; });
+  });
+
+  root.querySelectorAll('[data-sidx]').forEach((el) => {
+    const i = Number(el.dataset.sidx);
+    const field = el.dataset.sfield;
+    if (el.type === 'checkbox') {
+      el.addEventListener('change', () => { draft.steps[i][field] = el.checked; });
+    } else if (el.tagName === 'SELECT') {
+      el.addEventListener('change', () => { draft.steps[i][field] = el.value; render(); });
+    } else {
+      el.addEventListener('input', () => { draft.steps[i][field] = el.value; });
+    }
+  });
+
+  root.querySelectorAll('[data-addstep]').forEach((el) =>
+    el.addEventListener('click', () => { addStep(el.dataset.addstep); render(); }));
+  root.querySelectorAll('[data-move]').forEach((el) =>
+    el.addEventListener('click', () => { moveStep(Number(el.dataset.idx), el.dataset.move); render(); }));
+  root.querySelectorAll('[data-removestep]').forEach((el) =>
+    el.addEventListener('click', () => { draft.steps.splice(Number(el.dataset.removestep), 1); render(); }));
+
+  const save = document.getElementById('journey-save');
+  if (save) save.addEventListener('click', saveJourney);
+}
+
+function addStep(type) {
+  const blanks = {
+    goto: { type: 'goto', url: '' },
+    click: { type: 'click', selector: '' },
+    fill: { type: 'fill', selector: '', value: '' },
+    hover: { type: 'hover', selector: '' },
+    waitFor: { type: 'waitFor', selector: '' },
+    snapshot: { type: 'snapshot', label: '' },
+  };
+  draft.steps.push({ ...(blanks[type] || { type }) });
+}
+
+function moveStep(i, dir) {
+  const j = dir === 'up' ? i - 1 : i + 1;
+  if (j < 0 || j >= draft.steps.length) return;
+  [draft.steps[i], draft.steps[j]] = [draft.steps[j], draft.steps[i]];
+}
+
+// The server validates authoritatively; this cleans stale per-type fields (e.g.
+// a selector left behind after switching a step to networkIdle) so an edit does
+// not carry contradictory values into validateJourney.
+function cleanStep(s) {
+  const o = { type: s.type };
+  if (s.optional) o.optional = true;
+  if (s.type === 'goto') o.url = (s.url || '').trim();
+  else if (s.type === 'click' || s.type === 'hover') o.selector = (s.selector || '').trim();
+  else if (s.type === 'fill') { o.selector = (s.selector || '').trim(); o.value = s.value || ''; }
+  else if (s.type === 'waitFor') {
+    if (s.networkIdle) o.networkIdle = true;
+    else if (s.ms) o.ms = Number(s.ms);
+    else o.selector = (s.selector || '').trim();
+  } else if (s.type === 'snapshot') {
+    o.label = (s.label || '').trim();
+    if (s.context) o.context = s.context;
+    if (s.rulesetId) o.rulesetId = s.rulesetId;
+    if (s.manual) o.manual = true;
+  }
+  return o;
+}
+
+async function saveJourney() {
+  const errBox = document.getElementById('journey-err');
+  errBox.textContent = '';
+  const localErrors = [];
+  if (!draft.name.trim()) localErrors.push('name is required');
+  if (!draft.rulesetId.trim()) localErrors.push('ruleset ID is required');
+  if (!draft.startUrl.trim()) localErrors.push('start URL is required');
+  if (!draft.steps.some((s) => s.type === 'snapshot')) localErrors.push('at least one snapshot step is required');
+  if (localErrors.length) { errBox.textContent = localErrors.join('; '); return; }
+
+  const payload = {
+    siteId: draft.siteId,
+    name: draft.name.trim(),
+    rulesetId: draft.rulesetId.trim(),
+    startUrl: draft.startUrl.trim(),
+    viewport: { width: Number(draft.vw) || 1440, height: Number(draft.vh) || 900 },
+    steps: draft.steps.map(cleanStep),
+  };
+  const save = document.getElementById('journey-save');
+  save.disabled = true;
+  try {
+    const saved = draft.id
+      ? await api('POST', `/api/journeys/${draft.id}`, payload)
+      : await api('POST', '/api/journeys', payload);
+    draft = null;
+    await refresh();
+    toast('ok', 'Journey saved', payload.name);
+    location.hash = `#/journey/${saved.id}`;
+  } catch (err) {
+    errBox.textContent = err.message;
+    save.disabled = false;
+  }
 }
 
 // ── fragments ───────────────────────────────────────────────────────────────
@@ -616,6 +1086,15 @@ function modeChip(mode) {
     : `<span class="chip warn">demo</span>`;
 }
 
+function runnerChip() {
+  const h = runnerH;
+  if (!h) return `<span class="chip idle">checking&hellip;</span>`;
+  if (!h.ok) return `<span class="chip crit">offline</span>`;
+  return h.runner?.aqa === 'real'
+    ? `<span class="chip good">ready</span>`
+    : `<span class="chip warn">demo</span>`;
+}
+
 function causeAction(c) {
   if (c.status === 'open' && c.mappedFile)
     return `<button class="btn small" data-act="dispatch" data-id="${c.id}">Dispatch fix task</button>`;
@@ -675,15 +1154,21 @@ const ACT_BUSY = {
   dispatch: 'Dispatching&hellip;',
   scan: 'Starting&hellip;',
   merged: 'Recording&hellip;',
+  runjourney: 'Starting&hellip;',
+  deletejourney: 'Deleting&hellip;',
 };
 const ACT_FAIL = {
   dispatch: 'Could not dispatch fix task',
   scan: 'Could not start scan',
   merged: 'Could not record merge',
   export: 'Could not export report',
+  runjourney: 'Could not start journey run',
+  deletejourney: 'Could not delete journey',
 };
 
 function bindActions() {
+  bindEditor();
+
   document.querySelectorAll('[data-go]').forEach((el) =>
     el.addEventListener('click', () => { location.hash = el.dataset.go; }));
 
@@ -718,6 +1203,18 @@ function bindActions() {
         if (act === 'merged') {
           await api('POST', `/api/prs/${encodeURIComponent(id)}/merged`);
           toast('ok', 'Merge recorded', 'Verification re-run started.');
+        }
+        if (act === 'runjourney') {
+          await api('POST', `/api/journeys/${id}/run`);
+          toast('ok', 'Journey run started', 'Progress shows on the journey page.');
+        }
+        if (act === 'deletejourney') {
+          if (!window.confirm('Delete this journey? Open causes it found are removed; any with a task or PR are kept.')) {
+            el.disabled = false; el.removeAttribute('aria-busy'); el.innerHTML = label; return;
+          }
+          await api('DELETE', `/api/journeys/${id}`);
+          toast('ok', 'Journey deleted');
+          location.hash = '#/journeys';
         }
         if (act === 'export') {
           const cause = S.causes.find((c) => c.id === id);
