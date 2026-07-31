@@ -52,17 +52,17 @@ function setDiscover(siteId, patch) {
 
 // Fire-and-forget, mirroring startJourneyRun/startRealScan: the route returns
 // 202 and the client watches site.discover through the state poll.
-export function startDiscovery(siteId, { focus } = {}) {
+export function startDiscovery(siteId, { focus, intent } = {}) {
   setDiscover(siteId, {
     state: 'running', stage: 'inspecting', startedAt: Date.now(),
-    error: null, proposals: [], focus: focus || [],
+    error: null, proposals: [], focus: focus || [], intent: intent || '',
   });
   update((s) => {
     const site = findSite(siteId, s);
     s.activity.unshift({ ts: Date.now(), msg: `Discovering journeys for ${site?.url || siteId}` });
   });
 
-  return discover(siteId, focus || []).catch((err) => {
+  return discover(siteId, focus || [], intent || '').catch((err) => {
     setDiscover(siteId, { state: null, stage: null, error: err.message, finishedAt: Date.now() });
     update((s) => {
       s.activity.unshift({ ts: Date.now(), msg: `Journey discovery failed for ${findSite(siteId, s)?.url || siteId}: ${err.message}` });
@@ -71,7 +71,7 @@ export function startDiscovery(siteId, { focus } = {}) {
   });
 }
 
-async function discover(siteId, focus) {
+async function discover(siteId, focus, intent) {
   const site = findSite(siteId);
   if (!site) throw new Error('site not found');
 
@@ -85,14 +85,14 @@ async function discover(siteId, focus) {
   let source = 'heuristic';
   if (llmConfigured()) {
     try {
-      raw = await proposeWithLlm({ site, page, focus, repoHints });
+      raw = await proposeWithLlm({ site, page, focus, intent, repoHints });
       source = 'llm';
     } catch (err) {
       console.error(`discovery: LLM pass failed for ${siteId}, falling back to heuristics:`, err.message);
     }
   }
   if (!raw.length) {
-    raw = proposeWithHeuristics({ page, focus });
+    raw = proposeWithHeuristics({ page, focus, intent });
     source = 'heuristic';
   }
 
@@ -164,7 +164,7 @@ function collectRepoHints(repoPath) {
 
 // ── LLM proposal ────────────────────────────────────────────────────────────
 
-async function proposeWithLlm({ site, page, focus, repoHints }) {
+async function proposeWithLlm({ site, page, focus, intent, repoHints }) {
   const system = [
     'You design accessibility test journeys for a web page.',
     'A journey is an ordered list of steps a real browser walks, ending in at least one snapshot that captures the DOM for scoring.',
@@ -174,12 +174,16 @@ async function proposeWithLlm({ site, page, focus, repoHints }) {
     'Prefer stable hooks: id, data-testid, aria-label. Avoid nth-of-type when a named hook exists.',
     'snapshot.context scopes scoring to a subtree; set it when the journey is about one region (a menu, a drawer, a form).',
     'Mark a step optional:true when its target may legitimately be absent (cookie banners above all).',
+    'If the operator supplied an "intent" prompt, treat it as the primary guide: it names the flows to prioritize and the ones to skip. Focus chips are secondary hints.',
     'Return JSON: { "journeys": [{ "name": string, "focus": string, "steps": [step] }] }',
     `Return at most ${MAX_PROPOSALS} journeys, each 1-6 steps, covering distinct user flows.`,
   ].join(' ');
 
   const user = JSON.stringify({
     siteUrl: site.url,
+    // The free-form onboarding prompt — verbatim so the model can weigh phrases
+    // like "skip the blog" or "cover the 3-step checkout" against the focus chips.
+    intent: intent || '',
     focusAreas: focus?.length ? focus : FOCUS_AREAS,
     page: {
       title: page.title, nav: page.nav, buttons: page.buttons,
@@ -198,9 +202,13 @@ async function proposeWithLlm({ site, page, focus, repoHints }) {
 // ── deterministic fallback ──────────────────────────────────────────────────
 
 // No API key, or the model failed: still propose something useful from the page
-// structure alone. Covers the flows the focus chips name.
-export function proposeWithHeuristics({ page, focus }) {
-  const wanted = (area) => !focus?.length || focus.some((f) => String(f).toLowerCase().includes(area));
+// structure alone. Covers the flows the focus chips name. When the operator
+// supplied a free-form intent instead of chips, harvest known area keywords
+// from the prompt so the heuristic still narrows correctly.
+export function proposeWithHeuristics({ page, focus, intent }) {
+  const derivedFocus = deriveFocusFromIntent(intent);
+  const effective = (focus && focus.length) ? focus : derivedFocus;
+  const wanted = (area) => !effective.length || effective.some((f) => String(f).toLowerCase().includes(area));
   const out = [];
   const byText = (list, re) => (list || []).find((x) => re.test(x.text || ''));
 
@@ -270,6 +278,22 @@ export function proposeWithHeuristics({ page, focus }) {
   }
 
   return out;
+}
+
+// Pull keyword hints out of the free-form intent so the heuristic fallback
+// still narrows when the operator wrote prose instead of ticking chips.
+// Tolerant on purpose: "add to cart", "cart page", "shopping bag" all match.
+export function deriveFocusFromIntent(intent) {
+  if (!intent) return [];
+  const t = String(intent).toLowerCase();
+  const found = [];
+  if (/\b(home|landing|homepage)\b/.test(t)) found.push('Home');
+  if (/\b(menu|mega[- ]?menu|nav|navigation)\b/.test(t)) found.push('Mega-menu');
+  if (/\b(cart|basket|bag|add[- ]to[- ]cart)\b/.test(t)) found.push('Add to cart');
+  if (/\b(search|find|query)\b/.test(t)) found.push('Search');
+  if (/\b(log ?in|sign ?in|account|auth)\b/.test(t)) found.push('Login');
+  if (/\b(checkout|purchase|payment|shipping|delivery)\b/.test(t)) found.push('Checkout');
+  return found;
 }
 
 // ── accept ──────────────────────────────────────────────────────────────────

@@ -616,7 +616,7 @@ function viewOnboardQuick() {
   return `
     <div class="crumb"><a href="#/onboard">Onboard</a> / Quick scan</div>
     <div class="topline"><h1>Quick scan <span class="chip good">no suite needed</span></h1></div>
-    <form class="form" id="quick-form" style="max-width:660px">
+    <form class="form" id="quick-form" style="max-width:720px">
       <div class="jrow2">
         <div class="field"><label for="q-url">Website URL</label>
           <input id="q-url" name="url" placeholder="https://fr.florga.com" autocomplete="off"></div>
@@ -633,16 +633,36 @@ function viewOnboardQuick() {
         <div class="hint">Absolute path to the repo on this machine.</div></div>
       <div class="field"><label for="q-repo">GitHub repo <span class="lblx">optional - owner/name, only used to open fix PRs</span></label>
         <input id="q-repo" name="repo" placeholder="florga/storefront" autocomplete="off"></div>
-      <label class="flabel">Focus areas <span class="lblx">guide the agent (optional)</span></label>
-      <div class="fchips" id="q-focus">
-        ${['Home', 'Mega-menu', 'Add to cart', 'Search', 'Login', 'Checkout'].map((f, i) => `
-          <label class="fc"><input type="checkbox" value="${esc(f)}"${i < 3 ? ' checked' : ''}> ${esc(f)}</label>`).join('')}
+
+      <div class="field">
+        <label for="q-intent">Tell us about the site <span class="lblx">optional but recommended — what it does, who uses it, biggest a11y worries</span></label>
+        <textarea id="q-intent" name="intent" rows="4" placeholder="Example: Cosmetics e-commerce in FR/EN. Biggest worry is the 3-step checkout and the cookie banner. Users are mostly 45+ so contrast and font sizing matter. Cover: home, PDP, add-to-cart, checkout, account login. Skip the blog." style="width:100%;min-height:110px;resize:vertical;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);line-height:1.5"></textarea>
+        <div class="hint">The agent reads this alongside your site &amp; repo. Free-form is fine — the more context, the fewer wrong journeys we propose.</div>
       </div>
-      <div class="hint">We visit the URL, read the page, and propose journeys for these areas. You review before anything runs.</div>
+
+      <details style="margin:2px 0 6px">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--accent)">Dev server for local verification (optional, unlocks Local Verifier)</summary>
+        <div style="border-left:2px solid var(--line);margin-top:10px;padding:4px 0 4px 14px">
+          <div class="jrow2">
+            <div class="field"><label for="q-ds-install">Install command</label>
+              <input id="q-ds-install" name="devServer.installCmd" placeholder="pnpm install --frozen-lockfile" autocomplete="off" spellcheck="false"></div>
+            <div class="field"><label for="q-ds-start">Start command</label>
+              <input id="q-ds-start" name="devServer.startCmd" placeholder="pnpm dev" autocomplete="off" spellcheck="false"></div>
+          </div>
+          <div class="jrow2">
+            <div class="field"><label for="q-ds-url">Preview URL</label>
+              <input id="q-ds-url" name="devServer.previewUrl" placeholder="http://localhost:3000" autocomplete="off" spellcheck="false"></div>
+            <div class="field"><label for="q-ds-health">Health path <span class="lblx">optional</span></label>
+              <input id="q-ds-health" name="devServer.healthPath" placeholder="/" autocomplete="off" spellcheck="false"></div>
+          </div>
+          <div class="hint">When set, the Local Verifier (roadmap M10) will spin the dev server on each PR branch and re-run the affected journey against it before we flag the PR as ready to merge.</div>
+        </div>
+      </details>
+
       <div class="err" id="quick-err" role="alert"></div>
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
         <a class="btn ghost" href="#/onboard">Back</a>
-        <button class="btn" type="submit">Scan &amp; discover journeys</button>
+        <button class="btn" type="submit">Analyze &amp; propose journeys</button>
       </div>
     </form>`;
 }
@@ -1570,29 +1590,47 @@ function bindActions() {
   });
 
   // Quick scan: create the site on the evaluate path, then immediately kick off
-  // journey discovery and drop the user on the review screen.
+  // journey discovery and drop the user on the review screen. The free-form
+  // intent replaces the old focus checkbox chips - it is what the Journey
+  // Designer LLM primarily reads, with focus chips as secondary hints.
   const quick = document.getElementById('quick-form');
   if (quick) quick.addEventListener('submit', async (e) => {
     e.preventDefault();
     const errBox = document.getElementById('quick-err');
     errBox.textContent = '';
-    const data = Object.fromEntries(new FormData(quick));
-    if (!data.url) { errBox.textContent = 'Enter a website URL.'; return; }
-    const focus = [...document.querySelectorAll('#q-focus input:checked')].map((c) => c.value);
+    const raw = Object.fromEntries(new FormData(quick));
+    if (!raw.url) { errBox.textContent = 'Enter a website URL.'; return; }
+
+    // Peel out the devServer.* fields into a nested object so the API can
+    // receive them as one block (matches the shape makeSite() normalizes).
+    const devServer = {};
+    const data = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (k.startsWith('devServer.')) devServer[k.slice('devServer.'.length)] = v;
+      else data[k] = v;
+    }
+    const hasDevServer = Object.values(devServer).some((v) => String(v || '').trim());
+    const intent = String(data.intent || '').trim();
+
     const btn = quick.querySelector('button[type="submit"]');
     btn.disabled = true;
     btn.setAttribute('aria-busy', 'true');
     btn.innerHTML = '<span class="spin"></span>Starting&hellip;';
     try {
-      const site = await api('POST', '/api/sites', { ...data, mode: 'quick' });
-      await api('POST', `/api/sites/${site.id}/discover`, { focus });
+      const site = await api('POST', '/api/sites', {
+        ...data,
+        mode: 'quick',
+        intent,
+        devServer: hasDevServer ? devServer : null,
+      });
+      await api('POST', `/api/sites/${site.id}/discover`, { intent });
       await refresh();
       location.hash = `#/site/${site.id}/proposed`;
     } catch (err) {
       errBox.textContent = err.message;
       btn.disabled = false;
       btn.removeAttribute('aria-busy');
-      btn.textContent = 'Scan & discover journeys';
+      btn.textContent = 'Analyze & propose journeys';
     }
   });
 

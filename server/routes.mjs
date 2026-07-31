@@ -215,7 +215,16 @@ export async function handle(req, res, url) {
     if (site.discover?.state === 'running') return json(res, 409, { error: 'discovery already running for this site' });
     const body = await readBody(req);
     const focus = Array.isArray(body.focus) ? body.focus.map(String) : [];
-    startDiscovery(site.id, { focus });
+    // Free-form intent trumps focus chips. Persisted on the site so a
+    // re-discovery uses the same prompt without the UI having to remember it.
+    const intent = typeof body.intent === 'string' ? body.intent.slice(0, 4000) : (site.intent || '');
+    if (intent !== site.intent) {
+      update((s) => {
+        const t = s.sites.find((x) => x.id === site.id);
+        if (t) t.intent = intent;
+      });
+    }
+    startDiscovery(site.id, { focus, intent });
     return json(res, 202, { ok: true, siteId: site.id });
   }
 
@@ -437,7 +446,29 @@ function makeSite(body) {
     framework: body.framework || 'unknown',
     flows: [],
     discover: null,
+    // Free-form onboarding prompt — what the customer wants us to focus on,
+    // fed into the Journey Designer LLM prompt. Optional; empty string when
+    // the customer skipped the textarea.
+    intent: body.intent ? String(body.intent).slice(0, 4000) : '',
+    // Optional dev-server config; used by the Local Verifier once M10 lands.
+    // Persisted here now so the onboarding form can capture it up front.
+    devServer: normalizeDevServer(body.devServer),
   };
+}
+
+function normalizeDevServer(input) {
+  if (!input || typeof input !== 'object') return null;
+  const s = (k) => (input[k] ? String(input[k]).slice(0, 500) : '');
+  const out = {
+    installCmd: s('installCmd'),
+    startCmd: s('startCmd'),
+    previewUrl: s('previewUrl'),
+    healthPath: s('healthPath') || '/',
+    readyTimeoutSec: Math.max(5, Math.min(600, Number(input.readyTimeoutSec) || 60)),
+    envFile: s('envFile'),
+  };
+  if (!out.installCmd && !out.startCmd && !out.previewUrl) return null;
+  return out;
 }
 
 // Minimal CSV: comma-separated cells, optional surrounding double quotes,
