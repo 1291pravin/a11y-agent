@@ -2,10 +2,8 @@
 // by root cause. Used by bootstrap.mjs (startup fleet load) and orchestrator.mjs
 // (rescan pipeline) so both paths produce identical site/cause shapes.
 
-import { existsSync } from 'node:fs';
 import * as aqa from '../integrations/aqa.mjs';
 import { filterNeedFixIssues } from './issue-filter.mjs';
-import { buildIndex, mapCause } from './mapper.mjs';
 import { triageCauses } from './triage.mjs';
 
 export async function hydrateSite(cfg) {
@@ -78,20 +76,6 @@ export async function hydrateSite(cfg) {
   const rawIssues = latestRun ? await collectIssues(latestRun.id, suite, test) : [];
   const issues = filterNeedFixIssues(rawIssues);
   const grouped = await triageCauses(groupIssues(issues, cfg.id), { siteUrl: cfg.url });
-
-  // Root-cause mapper (M3): when the site has a local clone of its frontend
-  // repo, index it once per hydration and map each cause to a file:line.
-  // Missing/nonexistent repoPath is not an error - causes stay unmapped.
-  if (cfg.repoPath && existsSync(cfg.repoPath)) {
-    try {
-      const index = buildIndex(cfg.repoPath);
-      for (const cause of grouped) {
-        if (!cause.mappedFile) cause.mappedFile = mapCause(cause, index);
-      }
-    } catch (err) {
-      console.error(`aqa-sync: mapping failed for ${cfg.id}:`, err.message);
-    }
-  }
 
   return {
     site: {
@@ -172,7 +156,8 @@ export function groupIssues(issues, siteId, opts = {}) {
         severity: mapSeverity(issue.properties),
         instances: 0,
         pages: new Set(),
-        mappedFile: null,
+        selector: normalizeSelector(issue.selectors?.[0] || issue.solutionId || 'unknown'),
+        tagName: issue.tagName || null,
         status: 'open',
         evidence: formatEvidence(issue),
       });
@@ -195,10 +180,21 @@ export function groupIssues(issues, siteId, opts = {}) {
       severity: g.severity,
       instances: g.instances,
       pages: [...g.pages].slice(0, 5),
-      mappedFile: g.mappedFile,
+      selector: g.selector,
+      tagName: g.tagName,
       status: g.status,
       evidence: g.evidence,
     }));
+}
+
+// Human-readable locator from AQA fields only (no repo guessing).
+export function formatCauseLocator(cause) {
+  const sel = cause?.selector && cause.selector !== 'unknown' ? cause.selector : '';
+  const tag = cause?.tagName ? String(cause.tagName).toLowerCase() : '';
+  if (tag && sel) return `${tag} · ${sel}`;
+  if (sel) return sel;
+  if (tag) return tag;
+  return null;
 }
 
 // ── Evaluate path adapter ───────────────────────────────────────────────────
@@ -223,8 +219,9 @@ export function evaluateIssuesToRaw(snapshots = []) {
   return raw;
 }
 
-// Re-hydration after a rescan: keep id/status/mappedFile of causes that match a
-// previous cause (same ruleId + title) so in-flight tasks stay linked.
+// Re-hydration after a rescan: keep id/status of causes that match a previous
+// cause (same ruleId + title) so in-flight tasks stay linked. Selector/tag come
+// from the latest AQA payload.
 // ── Score ───────────────────────────────────────────────────────────────────
 //
 // A 0-100 accessibility score. This is OUR number, not AQA's: AQA reports
@@ -293,9 +290,7 @@ export function mergeCauses(prevCauses, nextCauses) {
     const prev = prevByKey.get(causeKey(next));
     if (prev && !claimed.has(prev.id)) {
       claimed.add(prev.id);
-      // A mappedFile that survived a merge is never overwritten; a previously
-      // unmapped cause may pick up a fresh mapping from the new hydration.
-      return { ...next, id: prev.id, status: prev.status, mappedFile: prev.mappedFile ?? next.mappedFile };
+      return { ...next, id: prev.id, status: prev.status };
     }
     return { ...next };
   });

@@ -26,7 +26,7 @@ import { chatJson, llmConfigured } from '../integrations/llm.mjs';
 const MAX_PROPOSALS = Math.max(1, Number(process.env.DISCOVER_MAX) || 6);
 const INSPECT_TIMEOUT_MS = Number(process.env.DISCOVER_INSPECT_TIMEOUT_MS) || 60000;
 const DRYRUN_TIMEOUT_MS = Number(process.env.DISCOVER_DRYRUN_TIMEOUT_MS) || 90000;
-const DEFAULT_RULESET = process.env.AQA_RULESET_ID || 'WCAG21AA';
+const DEFAULT_RULESET = process.env.AQA_RULESET_ID || 'wcag21_needfix_1';
 
 // What the user can ask the agent to concentrate on. Free-form focus strings are
 // passed through too; these are just the ones the UI offers and the heuristics

@@ -100,16 +100,46 @@ export async function runIssues(runId, flowId) {
 // pageUrl - it is a label carried into the response - so this is the only path
 // that can score localhost, preview builds, and pages behind a login.
 //
-// KNOWN AMBIGUITY, unverified against a live key: the OpenAPI schema defines
-// the properties as `pageUrl`/`rulesetId` but its `required` array spells them
-// `pageurl`/`rulesetid`. Only one spelling can be the one the server parses.
-// We send camelCase, matching the property definitions and the endpoint's own
-// prose. If a live call rejects this with a missing-parameter error, try the
-// lowercase spelling before looking anywhere else. Tracked in PLAN.md under
-// "Verification checklist (evaluate + journey runner)".
-export async function evaluate({ rulesetId, pageUrl, code, context, manual = false }) {
+// Live API (colgate account, 2026): evaluate requires rulesetPackId (typically
+// `v2` from GET /a11y/tests/rulesets) alongside rulesetId. Without the pack the
+// server returns HTTP 404 `pack_not_found`, which is easy to misread as a missing
+// route. The common-skills api-reference omits the pack field; testCreate uses the
+// same pair.
+//
+// UI labels like WCAG21AA are legacy; map them to pack ruleset ids before POST.
+const DEFAULT_RULESET_PACK_ID = process.env.AQA_RULESET_PACK_ID || 'v2';
+
+const LEGACY_RULESET_ID = {
+  WCAG21AA: 'wcag21',
+  WCAG22AA: 'wcag22',
+  WCAG21A: 'wcag21_levelA_1',
+  WCAG22A: 'wcag22_levelA_1',
+  wcag2aa: 'wcag21',
+  'wcag-2.1-aa': 'wcag21',
+  'wcag-2.2-aa': 'wcag22',
+};
+
+export function normalizeEvaluateRuleset(rulesetId) {
+  const id = String(rulesetId || '').trim();
+  return LEGACY_RULESET_ID[id] || id;
+}
+
+export async function evaluate({
+  rulesetId,
+  rulesetPackId,
+  pageUrl,
+  code,
+  context,
+  manual = false,
+}) {
   assertReal();
-  const body = { rulesetId, pageUrl, code, manual: Boolean(manual) };
+  const body = {
+    rulesetPackId: rulesetPackId || DEFAULT_RULESET_PACK_ID,
+    rulesetId: normalizeEvaluateRuleset(rulesetId),
+    pageUrl,
+    code,
+    manual: Boolean(manual),
+  };
   // context scopes scoring to a subtree; omitted entirely rather than sent empty.
   if (context) body.context = context;
   return req('POST', '/a11y/tests/evaluate', body, { form: true });

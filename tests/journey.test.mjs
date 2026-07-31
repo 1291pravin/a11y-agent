@@ -286,6 +286,7 @@ function mockHandler(req, res) {
       // so a silent switch to lowercase would fail the pipeline tests.
       const missing = ['rulesetId', 'pageUrl', 'code'].filter((k) => !params.get(k));
       if (missing.length) return send({ error: `missing_parameter: ${missing.join(', ')}` }, 400);
+      if (!params.get('rulesetPackId')) return send({ error: 'missing_parameter: rulesetPackId' }, 400);
 
       const code = params.get('code') || '';
       const menuOpen = !/id="menu"[^>]*\shidden/.test(code);
@@ -486,8 +487,8 @@ test('a journey run walks the browser, scores each snapshot and groups the issue
   for (const call of evaluateCalls) {
     assert.match(call.contentType, /application\/x-www-form-urlencoded/);
     assert.equal(call.team, 'mock-key');
-    assert.deepEqual(call.keys.sort(), ['code', 'manual', 'pageUrl', 'rulesetId']);
-    assert.equal(call.rulesetId, 'wcag-2.1-aa');
+    assert.deepEqual(call.keys.sort(), ['code', 'manual', 'pageUrl', 'rulesetId', 'rulesetPackId']);
+    assert.equal(call.rulesetId, 'wcag21');
     assert.equal(call.pageUrl, `${mockBase}/fixture`);
     assert.ok(call.codeLength > 0);
   }

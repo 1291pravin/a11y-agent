@@ -12,8 +12,10 @@
 import { createServer } from 'node:http';
 import { runJourney, dryRunJourney, inspectPage } from './journey-run.mjs';
 import * as aqa from '../integrations/aqa.mjs';
+import { listenAvailable } from '../server/listen-port.mjs';
 
-const PORT = Number(process.env.RUNNER_PORT) || 4174;
+const PREFERRED_PORT = Number(process.env.RUNNER_PORT) || 4174;
+const PORT_STRICT = process.env.RUNNER_PORT_STRICT === '1' || process.env.RUNNER_PORT_STRICT === 'true';
 // Loopback by default: this endpoint drives a real browser at any URL it is
 // given, which is not something to expose on a shared interface without intent.
 const HOST = process.env.RUNNER_HOST || '127.0.0.1';
@@ -95,8 +97,17 @@ function readBody(req) {
   });
 }
 
-server.listen(PORT, HOST, () => {
-  console.log('A11y Agent journey runner');
-  console.log(`  http://${HOST}:${PORT}`);
-  console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode - /run will refuse'}`);
-});
+listenAvailable(server, { host: HOST, preferredPort: PREFERRED_PORT, strict: PORT_STRICT })
+  .then((port) => {
+    if (port !== PREFERRED_PORT) {
+      console.log(`  Port ${PREFERRED_PORT} in use — listening on ${port} instead`);
+      console.log(`  Set RUNNER_URL=http://${HOST}:${port} in the control plane .env`);
+    }
+    console.log('A11y Agent journey runner');
+    console.log(`  http://${HOST}:${port}`);
+    console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode - /run will refuse'}`);
+  })
+  .catch((err) => {
+    console.error('Runner failed to bind:', err.message);
+    process.exit(1);
+  });

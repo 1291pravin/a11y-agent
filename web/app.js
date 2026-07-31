@@ -453,13 +453,13 @@ function viewSite(r) {
 
     <h2>Violations by root cause (${causes.reduce((n, c) => n + c.instances, 0)} instances, ${causes.length} causes)</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>Mapped to</th><th>Action</th></tr></thead>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>AQA locator</th><th>Action</th></tr></thead>
       <tbody>${causes.length ? causes.map((c) => `
         <tr>
           <td>${esc(c.title)}</td>
           <td><span class="chip ${c.severity === 'critical' ? 'crit' : 'warn'}">${esc(c.rule)}</span></td>
           <td class="tnum">${c.instances} &middot; ${esc(c.pages[0] === 'all pages' ? 'all pages' : c.pages.length + ' pages')}</td>
-          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped - vendor/CMS</span>'}</td>
+          <td class="mono">${causeLocatorCell(c)}</td>
           <td>${causeAction(c)}</td>
         </tr>`).join('') : `<tr><td colspan="5" class="empty">No open violations.</td></tr>`}
       </tbody>
@@ -622,9 +622,10 @@ function viewOnboardQuick() {
           <input id="q-url" name="url" placeholder="https://fr.florga.com" autocomplete="off"></div>
         <div class="field"><label for="q-ruleset">Ruleset</label>
           <select id="q-ruleset" name="rulesetId">
-            <option value="WCAG21AA">WCAG 2.1 AA</option>
-            <option value="WCAG22AA">WCAG 2.2 AA</option>
-            <option value="WCAG21A">WCAG 2.1 A</option>
+            <option value="wcag21_needfix_1">WCAG 2.1 AA (auto only)</option>
+            <option value="wcag21">WCAG 2.1 AA (full)</option>
+            <option value="wcag22_needfix_1">WCAG 2.2 AA (auto only)</option>
+            <option value="wcag22">WCAG 2.2 AA (full)</option>
           </select></div>
       </div>
       <div class="field"><label for="q-repopath">Local repo folder <span class="lblx">optional - lets the agent read your code for better selectors, and maps issues to files</span></label>
@@ -786,7 +787,7 @@ function viewSettings() {
           <td>Set <span class="mono">AQA_TEAMSLUG</span> + <span class="mono">AQA_API_KEY</span> env vars and restart for real mode.</td></tr>
         <tr><td>Cursor Background Agents</td>
           <td>${modeChip(S.mode.cursor)}</td>
-          <td>Set <span class="mono">CURSOR_API_KEY</span> env var and restart for real mode.</td></tr>
+          <td>Set <span class="mono">CURSOR_API_KEY</span> for cloud agents. <span class="mono">CURSOR_MODE=auto|cloud|cli</span> controls local CLI fallback (needs <span class="mono">agent</span> + site <span class="mono">repoPath</span>). Mode: <span class="mono">${esc(S.mode.cursorMode || 'auto')}</span>${S.mode.cursorCli ? ' · CLI ready' : ''}.</td></tr>
         <tr><td>Journey runner (Playwright)</td>
           <td>${runnerChip()}</td>
           <td>Separate process on <span class="mono">RUNNER_URL</span>; start with <span class="mono">npm run runner</span>. ${runnerH && !runnerH.ok ? esc(runnerH.error || 'unreachable') : runnerH?.runner ? 'Browser ' + esc(runnerH.runner.browser || 'chromium') + ', AQA ' + esc(runnerH.runner.aqa || '?') : 'Checking&hellip;'}</td></tr>
@@ -955,7 +956,7 @@ function viewJourneyReport(r) {
 
     <h2>What is failing &amp; where</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Root cause</th><th>Rule</th><th>Severity</th><th>Where</th><th>Instances</th><th>Source</th></tr></thead>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Severity</th><th>Where</th><th>Instances</th><th>AQA locator</th></tr></thead>
       <tbody>${causes.length ? causes.map((c) => `
         <tr>
           <td>${esc(c.title)}</td>
@@ -963,7 +964,7 @@ function viewJourneyReport(r) {
           <td><span class="chip ${c.severity === 'critical' ? 'crit' : c.severity === 'serious' ? 'warn' : 'idle'}">${esc(c.severity)}</span></td>
           <td>${esc((c.pages || []).join(', ') || '-')}</td>
           <td class="tnum">${c.instances}</td>
-          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped</span>'}</td>
+          <td class="mono">${causeLocatorCell(c)}</td>
         </tr>`).join('') : `<tr><td colspan="6" class="empty">No open fix-required violations on this journey.</td></tr>`}
       </tbody>
     </table></div>
@@ -1048,13 +1049,13 @@ function viewJourneyDetail(r) {
 
     <h2>Violations by root cause (${violations} instances, ${causes.length} causes)</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>Mapped to</th><th>Action</th></tr></thead>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>AQA locator</th><th>Action</th></tr></thead>
       <tbody>${causes.length ? causes.map((c) => `
         <tr>
           <td>${esc(c.title)}</td>
           <td><span class="chip ${c.severity === 'critical' ? 'crit' : 'warn'}">${esc(c.rule)}</span></td>
           <td class="tnum">${c.instances} &middot; ${esc(c.pages[0] === 'all pages' ? 'all pages' : c.pages.length + ' pages')}</td>
-          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped - vendor/CMS</span>'}</td>
+          <td class="mono">${causeLocatorCell(c)}</td>
           <td>${causeAction(c)}</td>
         </tr>`).join('') : `<tr><td colspan="5" class="empty">No open violations.</td></tr>`}
       </tbody>
@@ -1104,7 +1105,7 @@ function ensureDraft(r) {
     draft = {
       for: 'new', id: null,
       siteId: S.sites[0]?.id || '',
-      name: '', rulesetId: '', startUrl: '', vw: 1440, vh: 900,
+      name: '', rulesetId: 'wcag21_needfix_1', startUrl: '', vw: 1440, vh: 900,
       steps: [{ type: 'snapshot', label: '' }],
     };
     return;
@@ -1130,12 +1131,13 @@ function viewJourneyEditor(r) {
       <div class="topline"><h1>${draft.id ? 'Edit journey' : 'New journey'}</h1></div>
       <div class="form" style="max-width:680px">
         <div class="jrow2">
-          <div class="field"><label>Name</label><input data-jfield="name" value="${esc(draft.name)}" placeholder="Checkout flow"></div>
+          <div class="field"><label for="journey-name">Name</label><input id="journey-name" data-jfield="name" value="${esc(draft.name)}" placeholder="Checkout flow"></div>
           <div class="field"><label>Site</label><select data-jfield="siteId">${S.sites.map((s) => `<option value="${s.id}"${s.id === draft.siteId ? ' selected' : ''}>${esc(hostOf(s.url))}</option>`).join('')}</select></div>
         </div>
         <div class="jrow2">
-          <div class="field"><label>Ruleset ID</label><input data-jfield="rulesetId" value="${esc(draft.rulesetId)}" placeholder="WCAG21AA"></div>
-          <div class="field"><label>Start URL</label><input data-jfield="startUrl" value="${esc(draft.startUrl)}" placeholder="https://example.com/cart"></div>
+          <div class="field"><label for="journey-ruleset">Ruleset ID</label><input id="journey-ruleset" data-jfield="rulesetId" value="${esc(draft.rulesetId)}" placeholder="wcag21_needfix_1" aria-describedby="journey-ruleset-hint"></div>
+          <div class="hint" id="journey-ruleset-hint">Pack id v2 is sent automatically (AQA_RULESET_PACK_ID).</div>
+          <div class="field"><label for="journey-start-url">Start URL</label><input id="journey-start-url" data-jfield="startUrl" value="${esc(draft.startUrl)}" placeholder="https://example.com/cart"></div>
         </div>
         <h2>Steps <span class="hint" style="display:inline">(at least one snapshot required)</span></h2>
         ${draft.steps.map(stepEditorRow).join('')}
@@ -1355,9 +1357,9 @@ function flowChip(f) {
 }
 
 function modeChip(mode) {
-  return mode === 'real'
-    ? `<span class="chip good">connected</span>`
-    : `<span class="chip warn">demo</span>`;
+  if (mode === 'real') return `<span class="chip good">connected</span>`;
+  if (mode === 'cli-ready') return `<span class="chip good">cli ready</span>`;
+  return `<span class="chip warn">demo</span>`;
 }
 
 function runnerChip() {
@@ -1369,17 +1371,32 @@ function runnerChip() {
     : `<span class="chip warn">demo</span>`;
 }
 
+function causeLocatorCell(c) {
+  const loc = formatCauseLocator(c);
+  return loc
+    ? esc(loc)
+    : '<span style="color:var(--ink-faint)" title="AQA did not provide a selector for this group">—</span>';
+}
+
+// Mirror of server/aqa-sync.mjs formatCauseLocator (SPA has no imports).
+function formatCauseLocator(c) {
+  const sel = c?.selector && c.selector !== 'unknown' ? c.selector : '';
+  const tag = c?.tagName ? String(c.tagName).toLowerCase() : '';
+  if (tag && sel) return `${tag} · ${sel}`;
+  if (sel) return sel;
+  if (tag) return tag;
+  return '';
+}
+
 function causeAction(c) {
   const site = S.sites.find((x) => x.id === c.siteId);
   // A fix task needs a repo to land in. Offering the button on an audit-only
   // (quick-scan) site would just produce a 400, so offer the report instead and
   // say why.
-  if (c.status === 'open' && c.mappedFile && site?.repo)
+  if (c.status === 'open' && site?.repo)
     return `<button class="btn small" data-act="dispatch" data-id="${c.id}">Dispatch fix task</button>`;
-  if (c.status === 'open' && c.mappedFile && !site?.repo)
-    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Add a GitHub repo to this site to enable auto-fix">Export report</button>`;
   if (c.status === 'open')
-    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Downloads fix-report.md covering all unmapped open causes for this site">Export report</button>`;
+    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Downloads fix-report.md for this site (no GitHub repo for auto-fix)">Export report</button>`;
   if (c.status === 'task') {
     const t = S.tasks.find((x) => x.causeId === c.id);
     return `<span class="chip run">task ${t ? t.state : 'running'}</span>`;

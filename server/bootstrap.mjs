@@ -8,7 +8,7 @@ import { hydrateSite } from './aqa-sync.mjs';
 const DEFAULT_SETTINGS = {
   policies: {
     planAutoApprove: 'auto if <= 25 flows and no auth-gated routes',
-    fixDispatch: 'auto for mapped root causes at severity A/AA',
+    fixDispatch: 'auto for open root causes at severity A/AA when a GitHub repo is set',
     prMerge: 'always human',
     runCadence: 'weekly, staggered Mon-Thu',
   },
@@ -121,7 +121,8 @@ export function demoSeed() {
         severity: 'critical',
         instances: 3,
         pages: ['/'],
-        mappedFile: 'src/Demo.vue:12',
+        selector: 'img.hero',
+        tagName: 'img',
         status: 'open',
         evidence: '<img class="hero" src="/hero.jpg">',
       },
@@ -134,7 +135,8 @@ export function demoSeed() {
         severity: 'serious',
         instances: 1,
         pages: ['/'],
-        mappedFile: null,
+        selector: 'iframe',
+        tagName: 'iframe',
         status: 'open',
         evidence: '<iframe src="https://vendor.example/embed">',
       },

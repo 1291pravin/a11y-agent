@@ -1,5 +1,5 @@
 // A11y Agent control plane. Zero-dep HTTP server: static webapp + JSON API.
-// Usage: node server/index.mjs   (PORT env, default 4173)
+// Usage: node server/index.mjs   (PORT env, default 4173; auto-increments if busy)
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -8,14 +8,17 @@ import { fileURLToPath } from 'node:url';
 import { handle as handleApi } from './routes.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
+import * as cursorCli from '../integrations/cursor-cli.mjs';
 import { bootstrapFleet, usesRealFleet, getState, update } from './store.mjs';
 import { hasFleetConfig } from './bootstrap.mjs';
 import { resumePolling } from './orchestrator.mjs';
 import { initScheduler, schedulerEnabled } from './scheduler.mjs';
+import { listenAvailable } from './listen-port.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(__dirname, '..', 'web');
-const PORT = Number(process.env.PORT) || 4173;
+const PREFERRED_PORT = Number(process.env.PORT) || 4173;
+const PORT_STRICT = process.env.PORT_STRICT === '1' || process.env.PORT_STRICT === 'true';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -72,23 +75,25 @@ async function start() {
     console.log('  Fleet:  FLEET_SITES set but AQA creds missing — demo mode');
   }
 
-  server.listen(PORT, () => {
-    console.log(`A11y Agent control plane`);
-    console.log(`  http://localhost:${PORT}`);
-    console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode'}`);
-    console.log(`  Cursor: ${cursor.isReal ? 'REAL' : 'demo mode'}`);
-    console.log(`  Auth:   ${process.env.ADMIN_TOKEN ? 'admin token required for writes' : 'open (set ADMIN_TOKEN to protect writes)'}`);
-    console.log(`  Sched:  ${schedulerEnabled() ? 'weekly staggered scans enabled' : 'disabled (set SCHEDULE_ENABLED=1 with real AQA)'}`);
-    initScheduler();
-    if (!process.env.GITHUB_WEBHOOK_SECRET) {
-      console.log('  GitHub: webhook unauthenticated (set GITHUB_WEBHOOK_SECRET to require signatures)');
-      update((s) => s.activity.unshift({
-        ts: Date.now(),
-        msg: 'GitHub merge webhook is unauthenticated - set GITHUB_WEBHOOK_SECRET to require signed deliveries',
-      }));
-    }
-    resumePolling();
-  });
+  const port = await listenAvailable(server, { preferredPort: PREFERRED_PORT, strict: PORT_STRICT });
+  if (port !== PREFERRED_PORT) {
+    console.log(`  Port ${PREFERRED_PORT} in use — listening on ${port} instead`);
+  }
+  console.log(`A11y Agent control plane`);
+  console.log(`  http://localhost:${port}`);
+  console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode'}`);
+  console.log(`  Cursor: ${cursor.isReal ? 'REAL (cloud)' : 'demo'}${cursorCli.isAvailable() ? ` · CLI ready (${process.env.CURSOR_MODE || 'auto'})` : ''}`);
+  console.log(`  Auth:   ${process.env.ADMIN_TOKEN ? 'admin token required for writes' : 'open (set ADMIN_TOKEN to protect writes)'}`);
+  console.log(`  Sched:  ${schedulerEnabled() ? 'weekly staggered scans enabled' : 'disabled (set SCHEDULE_ENABLED=1 with real AQA)'}`);
+  initScheduler();
+  if (!process.env.GITHUB_WEBHOOK_SECRET) {
+    console.log('  GitHub: webhook unauthenticated (set GITHUB_WEBHOOK_SECRET to require signatures)');
+    update((s) => s.activity.unshift({
+      ts: Date.now(),
+      msg: 'GitHub merge webhook is unauthenticated - set GITHUB_WEBHOOK_SECRET to require signed deliveries',
+    }));
+  }
+  resumePolling();
 }
 
 start();

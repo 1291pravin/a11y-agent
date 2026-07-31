@@ -1,13 +1,15 @@
 // Task lifecycle: queued -> working -> verifying -> done | failed | reopened.
-// Real mode: dispatch launches a Cursor Background Agent and polls it.
-// Demo mode: a timer advances tasks through scripted stages so the office can
-// test the full loop without credentials. Both modes park at "verifying" once
-// a PR is open; merge intake (webhook or manual) drives verification (M4).
+// Real mode: dispatch launches a Cursor Cloud Agent (with optional CLI fallback)
+// and polls it. Demo mode: a timer advances tasks through scripted stages so
+// the office can test the full loop without credentials. Both modes park at
+// "verifying" once a PR is open; merge intake (webhook or manual) drives
+// verification (M4).
 
 import { getState, update, nextId } from './store.mjs';
 import * as cursor from '../integrations/cursor.mjs';
+import * as cursorCli from '../integrations/cursor-cli.mjs';
 import * as aqa from '../integrations/aqa.mjs';
-import { hydrateSite, mergeCauses, diffCauses } from './aqa-sync.mjs';
+import { hydrateSite, mergeCauses, diffCauses, formatCauseLocator } from './aqa-sync.mjs';
 
 const DEMO_STAGE_MS = Number(process.env.DEMO_STAGE_MS) || 5000;
 const DEMO_VERIFY_MS = Number(process.env.DEMO_VERIFY_MS) || 2000;
@@ -16,15 +18,37 @@ const CURSOR_MAX_POLL_ERRORS = 10;
 const CURSOR_LAUNCH_RETRIES = Number(process.env.CURSOR_LAUNCH_RETRIES) || 3;
 const CURSOR_LAUNCH_RETRY_MS = Number(process.env.CURSOR_LAUNCH_RETRY_MS) || 5000;
 
+// CURSOR_MODE: auto (default) | cloud | cli
+// auto = cloud when CURSOR_API_KEY is set, else CLI when agent binary + repoPath
+//        exist; cloud launch failures also fall back to CLI when possible.
+export function cursorMode() {
+  return String(process.env.CURSOR_MODE || 'auto').toLowerCase();
+}
+
+export function resolveAgentKind(site) {
+  const mode = cursorMode();
+  const cliOk = cursorCli.isAvailable() && Boolean(site?.repoPath);
+  if (mode === 'cli') return cliOk ? 'cursor-cli' : 'demo';
+  if (mode === 'cloud') return cursor.isReal ? 'cursor' : 'demo';
+  if (cursor.isReal) return 'cursor';
+  if (cliOk) return 'cursor-cli';
+  return 'demo';
+}
+
+function canCliFallback(site) {
+  return cursorMode() !== 'cloud' && cursorCli.isAvailable() && Boolean(site?.repoPath);
+}
+
 export function dispatchTask(cause, site) {
+  const agent = resolveAgentKind(site);
   const task = {
     id: nextId('task-'),
     causeId: cause.id,
     siteId: site.id,
     title: cause.title,
-    file: cause.mappedFile,
+    file: formatCauseLocator(cause) || cause.selector || null,
     state: 'queued',
-    agent: cursor.isReal ? 'cursor' : 'demo',
+    agent,
     agentId: null,
     log: [line(`task created for root cause "${cause.title}" (${cause.instances} instances)`)],
     pr: null,
@@ -36,7 +60,9 @@ export function dispatchTask(cause, site) {
     s.activity.unshift({ ts: Date.now(), msg: `Dispatched fix task ${task.id}: ${cause.title}` });
   });
 
-  if (cursor.isReal) launchReal(task, cause, site).catch((err) => failTask(task.id, err.message));
+  if (agent === 'cursor' || agent === 'cursor-cli') {
+    launchReal(task, cause, site).catch((err) => failTask(task.id, err.message));
+  }
   return task;
 }
 
@@ -57,6 +83,7 @@ export function retryTask(taskId) {
     const t = state.tasks.find((x) => x.id === taskId);
     if (!t) return;
     t.state = 'queued';
+    t.agent = resolveAgentKind(site);
     t.agentId = null;
     t.runId = null;
     t.pr = null;
@@ -65,11 +92,17 @@ export function retryTask(taskId) {
     state.activity.unshift({ ts: Date.now(), msg: `Retrying failed task ${taskId}` });
   });
 
-  if (cursor.isReal) launchReal(task, cause, site).catch((err) => failTask(task.id, err.message));
+  const refreshed = getState().tasks.find((x) => x.id === taskId);
+  if (refreshed?.agent === 'cursor' || refreshed?.agent === 'cursor-cli') {
+    launchReal(refreshed, cause, site).catch((err) => failTask(taskId, err.message));
+  }
   return getState().tasks.find((x) => x.id === taskId);
 }
 
 async function launchReal(task, cause, site, attempt = 1) {
+  const kind = getState().tasks.find((x) => x.id === task.id)?.agent || resolveAgentKind(site);
+  if (kind === 'cursor-cli') return launchCli(task, cause, site);
+
   const prompt = cursor.buildFixPrompt(cause, site);
   if (attempt === 1) {
     addLog(task.id, `launching Cursor cloud agent on ${site.repo} (${cursor.MODEL_ID})`);
@@ -80,7 +113,7 @@ async function launchReal(task, cause, site, attempt = 1) {
     const agent = await cursor.launchAgent({ repo: site.repo, prompt });
     update((s) => {
       const t = s.tasks.find((x) => x.id === task.id);
-      if (t) { t.agentId = agent.id; t.runId = agent.runId; t.state = 'working'; }
+      if (t) { t.agent = 'cursor'; t.agentId = agent.id; t.runId = agent.runId; t.state = 'working'; }
     });
     addLog(task.id, `cursor agent ${agent.id} started (run ${agent.runId})`);
     pollReal(task.id);
@@ -90,8 +123,38 @@ async function launchReal(task, cause, site, attempt = 1) {
       await sleep(CURSOR_LAUNCH_RETRY_MS);
       return launchReal(task, cause, site, attempt + 1);
     }
+    // Cloud is down / key rejected: fall back to local CLI when configured.
+    if (canCliFallback(site)) {
+      addLog(task.id, `cloud launch failed (${err.message}) - falling back to Cursor CLI`);
+      update((s) => {
+        const t = s.tasks.find((x) => x.id === task.id);
+        if (t) t.agent = 'cursor-cli';
+      });
+      return launchCli(task, cause, site);
+    }
     throw err;
   }
+}
+
+async function launchCli(task, cause, site) {
+  const prompt = cursor.buildFixPrompt(cause, site);
+  addLog(task.id, `launching Cursor CLI agent in ${site.repoPath} (${cursorCli.MODEL_ID})`);
+  const agent = await cursorCli.launchAgent({
+    workspace: site.repoPath,
+    prompt,
+    taskId: task.id,
+  });
+  update((s) => {
+    const t = s.tasks.find((x) => x.id === task.id);
+    if (t) {
+      t.agent = 'cursor-cli';
+      t.agentId = agent.id;
+      t.runId = agent.runId;
+      t.state = 'working';
+    }
+  });
+  addLog(task.id, `cursor CLI run ${agent.id} started (pid ${agent.pid || '?'})`);
+  pollReal(task.id);
 }
 
 function pollReal(taskId) {
@@ -99,6 +162,7 @@ function pollReal(taskId) {
   const deadlineMs = Number(process.env.CURSOR_POLL_DEADLINE_MS) || 30 * 60 * 1000;
   const deadline = Date.now() + deadlineMs;
   let pollErrors = 0;
+  let lastLoggedLen = 0;
   const timer = setInterval(async () => {
     const t = getState().tasks.find((x) => x.id === taskId);
     if (!t || t.state === 'done' || t.state === 'failed') return clearInterval(timer);
@@ -108,15 +172,31 @@ function pollReal(taskId) {
       return failTask(taskId, `cursor run not terminal after ${Math.round(deadlineMs / 60000)} min - poll deadline expired`);
     }
     try {
-      const run = await cursor.getRun(t.agentId, t.runId);
+      const run = t.agent === 'cursor-cli'
+        ? cursorCli.getRun(t.runId)
+        : await cursor.getRun(t.agentId, t.runId);
       pollErrors = 0;
+
+      // Surface fresh CLI stdout into the task log (capped).
+      if (t.agent === 'cursor-cli' && run.output) {
+        const fresh = run.output.slice(lastLoggedLen);
+        if (fresh.trim()) {
+          const preview = fresh.trim().split(/\r?\n/).slice(-3).join(' | ').slice(0, 240);
+          if (preview) addLog(taskId, `cli: ${preview}`);
+          lastLoggedLen = run.output.length;
+        }
+      }
+
       const status = (run.status || '').toUpperCase();
       if (status === 'FINISHED') {
         clearInterval(timer);
         finishReal(taskId, run);
       } else if (['ERROR', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(status)) {
         clearInterval(timer);
-        failTask(taskId, `cursor run reported ${status}`);
+        const detail = t.agent === 'cursor-cli' && run.output
+          ? run.output.trim().split(/\r?\n/).slice(-5).join(' | ').slice(0, 400)
+          : '';
+        failTask(taskId, `cursor run reported ${status}${detail ? `: ${detail}` : ''}`);
       }
     } catch (err) {
       pollErrors += 1;
@@ -171,10 +251,17 @@ function finishReal(taskId, run) {
 // in-flight cursor tasks. Called once from index.mjs after the server starts.
 export function resumePolling() {
   for (const t of getState().tasks) {
-    if (t.agent !== 'cursor' || !['queued', 'working'].includes(t.state)) continue;
+    if (!['cursor', 'cursor-cli'].includes(t.agent) || !['queued', 'working'].includes(t.state)) continue;
     if (!t.agentId) { failTask(t.id, 'orphaned by restart - re-dispatch'); continue; }
-    if (!cursor.isReal) { failTask(t.id, 'CURSOR_API_KEY missing after restart - re-dispatch'); continue; }
-    addLog(t.id, `resuming poll for cursor agent ${t.agentId} after restart`);
+    if (t.agent === 'cursor' && !cursor.isReal) {
+      failTask(t.id, 'CURSOR_API_KEY missing after restart - re-dispatch');
+      continue;
+    }
+    if (t.agent === 'cursor-cli' && !cursorCli.isAvailable()) {
+      failTask(t.id, 'Cursor CLI missing after restart - re-dispatch');
+      continue;
+    }
+    addLog(t.id, `resuming poll for ${t.agent} agent ${t.agentId} after restart`);
     pollReal(t.id);
   }
 }

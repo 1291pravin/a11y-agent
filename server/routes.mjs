@@ -1,18 +1,17 @@
 // API handlers. All JSON in/out. Router in index.mjs calls handle(req, res, url).
 
-import { existsSync } from 'node:fs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
-import { dispatchTask, retryTask, demoScan, startRealScan, verifyMerge } from './orchestrator.mjs';
-import { buildIndex, mapCause } from './mapper.mjs';
+import { dispatchTask, retryTask, demoScan, startRealScan, verifyMerge, cursorMode } from './orchestrator.mjs';
 import { slotFor, schedulerEnabled } from './scheduler.mjs';
 import { allJourneys, findJourney, makeJourney, startJourneyRun, runnerHealth } from './journeys.mjs';
 import { validateJourney } from './journey-model.mjs';
 import { startDiscovery, acceptProposals, FOCUS_AREAS } from './journey-propose.mjs';
 import { journeyReportMarkdown, actionFor } from './report.mjs';
-import { scoreCauses, openCauses } from './aqa-sync.mjs';
+import { scoreCauses, openCauses, formatCauseLocator } from './aqa-sync.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
+import * as cursorCli from '../integrations/cursor-cli.mjs';
 
 // M5: optional shared admin token. When set, every non-GET /api/* route
 // requires "authorization: Bearer <token>" - except the GitHub webhook,
@@ -57,6 +56,24 @@ export async function handle(req, res, url) {
     return json(res, 201, site);
   }
 
+  // Update editable site fields (local repoPath is required for Cursor CLI fallback).
+  let m;
+  if (method === 'PATCH' && (m = path.match(/^\/api\/sites\/([\w-]+)$/))) {
+    const body = await readBody(req);
+    let updated = null;
+    update((s) => {
+      const site = s.sites.find((x) => x.id === m[1]);
+      if (!site) return;
+      if (body.repoPath !== undefined) site.repoPath = body.repoPath ? String(body.repoPath) : null;
+      if (body.repo !== undefined) site.repo = body.repo ? String(body.repo) : null;
+      if (body.framework !== undefined) site.framework = String(body.framework || 'unknown');
+      updated = site;
+      s.activity.unshift({ ts: Date.now(), msg: `Updated site ${site.url}` });
+    });
+    if (!updated) return json(res, 404, { error: 'site not found' });
+    return json(res, 200, updated);
+  }
+
   // M5: batch onboarding. Body is raw CSV text with a header row naming the
   // columns (url,repo,suiteId required; testId,repoPath,framework optional;
   // any order, unknown columns ignored). Rows whose url or suiteId already
@@ -78,8 +95,6 @@ export async function handle(req, res, url) {
     });
     return json(res, 200, { created, skipped, errors: parsed.errors });
   }
-
-  let m;
 
   // ── Journeys (evaluate path) ──────────────────────────────────────────────
   // A journey is the supplement to a site's AQA suite, never a replacement:
@@ -226,33 +241,13 @@ export async function handle(req, res, url) {
     return json(res, 202, { ok: true, mode: 'demo' });
   }
 
-  // M3: rebuild the source index and remap every open cause of the site.
-  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/remap$/))) {
-    const site = getState().sites.find((x) => x.id === m[1]);
-    if (!site) return json(res, 404, { error: 'site not found' });
-    if (!site.repoPath) return json(res, 400, { error: 'site has no repoPath; set one to enable source mapping' });
-    if (!existsSync(site.repoPath)) return json(res, 400, { error: `repoPath does not exist: ${site.repoPath}` });
-    const index = buildIndex(site.repoPath);
-    let mapped = 0;
-    let unmapped = 0;
-    update((s) => {
-      for (const cause of s.causes) {
-        if (cause.siteId !== site.id || cause.status !== 'open') continue;
-        cause.mappedFile = mapCause(cause, index) || cause.mappedFile || null;
-        if (cause.mappedFile) mapped += 1; else unmapped += 1;
-      }
-      s.activity.unshift({ ts: Date.now(), msg: `Remapped ${site.url}: ${mapped} mapped, ${unmapped} unmapped` });
-    });
-    return json(res, 200, { mapped, unmapped });
-  }
-
-  // M3: unmapped open causes export as a fix-report.md handoff for humans.
+  // Audit-only sites (no GitHub repo): export open causes as fix-report.md.
   if (method === 'GET' && (m = path.match(/^\/api\/sites\/([\w-]+)\/fix-report$/))) {
     const s = getState();
     const site = s.sites.find((x) => x.id === m[1]);
     if (!site) return json(res, 404, { error: 'site not found' });
-    const causes = s.causes.filter((c) => c.siteId === site.id && c.status === 'open' && !c.mappedFile);
-    const body = fixReport(site, causes);
+    const causes = s.causes.filter((c) => c.siteId === site.id && c.status === 'open');
+    const body = fixReport(site, causes, { auditOnly: !site.repo });
     res.writeHead(200, {
       'content-type': 'text/markdown; charset=utf-8',
       'content-disposition': `attachment; filename="fix-report-${site.id}.md"`,
@@ -265,7 +260,6 @@ export async function handle(req, res, url) {
     const s = getState();
     const cause = s.causes.find((x) => x.id === m[1]);
     if (!cause) return json(res, 404, { error: 'cause not found' });
-    if (!cause.mappedFile) return json(res, 400, { error: 'cause is unmapped; export a report instead' });
     if (cause.status !== 'open') return json(res, 409, { error: `cause already ${cause.status}` });
     const site = s.sites.find((x) => x.id === cause.siteId);
     if (!site) return json(res, 404, { error: 'site not found' });
@@ -348,22 +342,28 @@ export async function handle(req, res, url) {
 // and the full journey report describe the same rule the same way.
 
 
-function fixReport(site, causes) {
+function fixReport(site, causes, { auditOnly = true } = {}) {
   const lines = [
     `# Fix report - ${site.url}`,
     '',
     `- Site: ${site.url}`,
     `- Suite: ${site.suiteId}`,
     `- Generated: ${new Date().toISOString()}`,
-    `- Unmapped open causes: ${causes.length}`,
-    '',
-    'These root causes could not be mapped to a source file (vendor embeds, CMS',
-    'content, or code outside the indexed repo), so no fix task was dispatched.',
-    'Hand this report to the owning team.',
+    `- Open causes: ${causes.length}`,
     '',
   ];
-  if (!causes.length) lines.push('Nothing to hand off - every open cause is mapped to a source file.', '');
+  if (auditOnly) {
+    lines.push(
+      'This site has no GitHub repo attached, so fixes cannot be dispatched automatically.',
+      'Hand this report to the owning team.',
+      '',
+    );
+  } else {
+    lines.push('Open accessibility root causes from the latest AQA run.', '');
+  }
+  if (!causes.length) lines.push('No open causes to report.', '');
   for (const c of causes) {
+    const locator = formatCauseLocator(c);
     lines.push(
       `## ${c.title}`,
       '',
@@ -371,6 +371,7 @@ function fixReport(site, causes) {
       `- Severity: ${c.severity}`,
       `- Instances: ${c.instances}`,
       `- Pages: ${(c.pages || []).join(', ') || '-'}`,
+      locator ? `- AQA locator: \`${locator}\`` : '',
       `- Evidence: \`${c.evidence || '-'}\``,
       `- Suggested action: ${actionFor(c.ruleId)}`,
       '',
@@ -404,7 +405,9 @@ function publicState() {
 function modeInfo() {
   return {
     aqa: aqa.isReal ? 'real' : 'demo',
-    cursor: cursor.isReal ? 'real' : 'demo',
+    cursor: cursor.isReal ? 'real' : (cursorCli.isAvailable() ? 'cli-ready' : 'demo'),
+    cursorMode: cursorMode(),
+    cursorCli: cursorCli.isAvailable(),
     auth: Boolean(ADMIN_TOKEN),
     schedule: schedulerEnabled(),
   };
