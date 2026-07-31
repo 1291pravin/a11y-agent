@@ -16,12 +16,34 @@
 // real browser, so a selector the model invented is caught before it is saved
 // rather than on the first scored run.
 
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getState, update } from './store.mjs';
 import { buildIndex } from './mapper.mjs';
 import { validateJourney } from './journey-model.mjs';
 import { callRunner, allJourneys, makeJourney } from './journeys.mjs';
 import { chatJson, llmConfigured } from '../integrations/llm.mjs';
+
+// Repo-relative screenshots root the runner writes into. The runner and the
+// server share a filesystem on every supported deployment (both are Node
+// processes on the same host), so a common absolute path is the simplest
+// wire format between the two.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCREENSHOT_ROOT = process.env.SCREENSHOT_DIR
+  ? resolve(process.env.SCREENSHOT_DIR)
+  : resolve(__dirname, '..', 'data', 'screenshots');
+
+export function screenshotRoot() {
+  return SCREENSHOT_ROOT;
+}
+
+// Public URL prefix for a screenshot file the runner wrote for this site.
+// Kept in sync with the static handler in server/index.mjs; if you change
+// one, change the other.
+export function screenshotUrl(siteId, tag, basename) {
+  return `/screenshots/${encodeURIComponent(siteId)}/${encodeURIComponent(tag)}/${encodeURIComponent(basename)}`;
+}
 
 const MAX_PROPOSALS = Math.max(1, Number(process.env.DISCOVER_MAX) || 6);
 const INSPECT_TIMEOUT_MS = Number(process.env.DISCOVER_INSPECT_TIMEOUT_MS) || 60000;
@@ -112,16 +134,34 @@ async function discover(siteId, focus, intent) {
 
   setDiscover(siteId, { stage: 'validating', proposals: candidates.map((c) => ({ ...c, dryRun: null })) });
 
+  // A re-discovery replaces the whole proposals list, so the previous batch's
+  // screenshots are orphaned. Wipe the site's screenshot subtree before the
+  // fresh dry-runs write into it so the review UI never shows stale
+  // thumbnails and disk usage stays bounded.
+  const siteShotDir = resolve(SCREENSHOT_ROOT, siteId);
+  try { rmSync(siteShotDir, { recursive: true, force: true }); } catch { /* fine */ }
+
   // Dry-run each in a real browser. This is the step that separates a plausible
-  // selector from a real one.
+  // selector from a real one. M7: also captures a viewport screenshot after
+  // every successful step so the reviewer can see what the browser sees,
+  // not just the selector list.
   const proposals = [];
-  for (const cand of candidates) {
+  for (const [idx, cand] of candidates.entries()) {
     let dryRun = null;
+    const tag = `proposal-${idx}`;
     try {
       const r = await callRunner('/dryrun', {
         journey: { name: cand.name, startUrl: site.url, steps: cand.steps, viewport: site.viewport },
+        screenshotDir: siteShotDir,
+        screenshotTag: tag,
       }, DRYRUN_TIMEOUT_MS);
-      dryRun = { ok: Boolean(r.ok), error: r.error || null, steps: r.steps || [] };
+      // The runner returns a screenshot BASENAME per step. Rewrite each to
+      // the public URL the static handler serves so the UI can drop it into
+      // <img src> without knowing the filesystem layout.
+      const steps = (r.steps || []).map((s) => s.screenshot
+        ? { ...s, screenshot: screenshotUrl(siteId, tag, s.screenshot) }
+        : s);
+      dryRun = { ok: Boolean(r.ok), error: r.error || null, steps };
     } catch (err) {
       dryRun = { ok: false, error: err.message, steps: [] };
     }

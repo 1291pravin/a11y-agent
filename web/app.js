@@ -496,6 +496,7 @@ function viewProposed(site) {
   const d = site.discover || {};
   const proposals = d.proposals || [];
   const running = d.state === 'running';
+  const hasIntent = Boolean(site.intent || d.intent);
 
   return `
     <div class="crumb"><a href="#/sites">Sites</a> / <a href="#/site/${site.id}">${esc(hostOf(site.url))}</a> / Proposed journeys</div>
@@ -503,34 +504,75 @@ function viewProposed(site) {
       <h1>Proposed journeys${proposals.length ? ` <span class="chip acc">${proposals.length} suggested</span>` : ''}</h1>
       <span>
         <a class="btn ghost small" href="#/journey/new" style="margin-right:6px">+ Add manually</a>
-        <button class="btn" data-act="acceptproposals" data-id="${site.id}"${running || !proposals.length ? ' disabled' : ''}>Accept selected</button>
+        <button class="btn" data-act="acceptproposals" data-id="${site.id}"${running || !proposals.length ? ' disabled' : ''}>Approve &amp; scan</button>
       </span>
     </div>
     ${discoverProgress(site)}
     ${d.error ? `<div class="err" style="margin:-4px 0 12px">Discovery failed: ${esc(d.error)}</div>` : ''}
+    ${hasIntent ? `<div class="intent-echo"><div class="intent-echo-l">Read from your intent</div><div class="intent-echo-b">${esc(site.intent || d.intent || '')}</div></div>` : ''}
     ${!running && !proposals.length ? `
       <div class="empty">No proposals yet.
         <button class="btn small" data-act="discover" data-id="${site.id}" style="margin-left:8px">Discover journeys</button>
       </div>`
     : `
-      <div class="hint" style="margin:-4px 0 12px">An agent inspected ${esc(hostOf(site.url))} and suggested these. Untick anything you do not want, then accept. You can edit steps afterwards.</div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th style="width:44px">Use</th><th>Journey</th><th>Focus</th><th>Proposed steps</th><th>Checked</th></tr></thead>
-        <tbody>${proposals.map((p, i) => {
-          const dr = p.dryRun;
-          const check = !dr ? '<span class="chip idle">pending</span>'
-            : dr.ok ? '<span class="chip good">selectors ok</span>'
-            : `<span class="chip crit" title="${esc(dr.error || '')}">selector failed</span>`;
-          return `
-            <tr>
-              <td><input type="checkbox" class="prop-pick" data-idx="${i}"${dr?.ok !== false ? ' checked' : ''} aria-label="Use ${esc(p.name)}"></td>
-              <td>${esc(p.name)}${p.source === 'auto' || p.source ? `<span class="autob">${esc(p.source)}</span>` : ''}</td>
-              <td>${esc(p.focus || '-')}</td>
-              <td class="stepprev">${esc(stepPreview(p.steps))}</td>
-              <td>${check}</td>
-            </tr>`;
-        }).join('')}</tbody>
-      </table></div>`}`;
+      <div class="hint" style="margin:-4px 0 12px">An agent inspected ${esc(hostOf(site.url))} and suggested these. Untick anything you do not want, then approve. Approval kicks off a scan on every included journey.</div>
+      <div class="proposal-grid">
+        ${proposals.map((p, i) => proposalCard(p, i)).join('')}
+      </div>`}`;
+}
+
+// One journey proposal as a card: header + screenshot strip + step preview +
+// include-in-batch checkbox. The screenshots come from the runner's dry-run
+// (M7) and let a reviewer skim what the journey actually visits rather than
+// squinting at selectors.
+function proposalCard(p, i) {
+  const dr = p.dryRun;
+  const failed = dr?.ok === false;
+  const pending = !dr;
+  const status = pending ? '<span class="chip idle">pending</span>'
+    : failed ? `<span class="chip crit" title="${esc(dr.error || '')}">selector failed</span>`
+    : '<span class="chip good">passed dry-run</span>';
+  const shots = (dr?.steps || []).slice(0, 8);
+  const stepLabels = (p.steps || []).map((s, idx) => stepLabel(s, idx));
+  return `
+    <div class="proposal-card${failed ? ' failed' : ''}">
+      <div class="prophead">
+        <div>
+          <div class="propname">${esc(p.name)}${p.source ? ` <span class="autob">${esc(p.source)}</span>` : ''}</div>
+          <div class="propmeta">${(p.steps || []).length} step(s) · ${dr ? `${dr.steps?.filter((s) => s.status === 'ok').length || 0}/${dr.steps?.length || 0} passed` : 'dry-run pending'}${p.focus ? ` · ${esc(p.focus)}` : ''}</div>
+        </div>
+        <div>${status}</div>
+      </div>
+      ${shots.length ? `<div class="shotstrip">${shots.map((s, idx) => shotThumb(s, idx, stepLabels[idx])).join('')}</div>` : ''}
+      <div class="stepprev-line">${esc(stepPreview(p.steps))}</div>
+      <div class="propfoot">
+        <label class="proplbl"><input type="checkbox" class="prop-pick" data-idx="${i}"${dr?.ok !== false ? ' checked' : ''} aria-label="Include ${esc(p.name)}"> Include</label>
+        <span class="propfoot-r">
+          <a class="btn ghost small" href="#/journey/new" title="Add manually">Edit</a>
+        </span>
+      </div>
+    </div>`;
+}
+
+function shotThumb(step, idx, label) {
+  if (!step.screenshot) {
+    // Failed / skipped steps have no thumbnail; render a placeholder that
+    // matches the shape so the strip stays aligned across cards.
+    const cls = step.status === 'skipped' ? 'shotph skipped' : 'shotph';
+    return `<div class="${cls}" aria-label="Step ${idx + 1}: ${esc(step.type)} (${esc(step.status || 'n/a')})"><span class="steplbl">${idx + 1}. ${esc(step.type)}</span></div>`;
+  }
+  return `
+    <div class="shotthumb" title="${esc(label || step.type)}">
+      <img src="${esc(step.screenshot)}" alt="Step ${idx + 1}: ${esc(label || step.type)}" loading="lazy">
+      <span class="steplbl">${idx + 1}. ${esc(label || step.type)}</span>
+    </div>`;
+}
+
+function stepLabel(step, idx) {
+  if (step.type === 'goto') return `goto ${shortUrl(step.url)}`;
+  if (step.type === 'snapshot') return step.label || 'snapshot';
+  if (step.selector) return `${step.type} ${step.selector.slice(0, 24)}`;
+  return step.type;
 }
 
 // One-line human summary of a step list, so the review table shows what a

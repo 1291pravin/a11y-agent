@@ -7,6 +7,8 @@
 // and talks to this process over HTTP instead of importing it.
 
 import { chromium } from '@playwright/test';
+import { mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import * as aqa from '../integrations/aqa.mjs';
 
 // Vendor-hosted by default. Overridable so tests can serve a stub and so an
@@ -16,10 +18,11 @@ const ANALYZER_URL = process.env.AQA_ANALYZER_URL
   || 'https://aqa.usablenet.com/aqapool/js/aqa-analyzer.js';
 const DEFAULT_STEP_TIMEOUT_MS = Number(process.env.RUNNER_STEP_TIMEOUT_MS) || 15000;
 
-export async function runJourney(journey) {
+export async function runJourney(journey, opts = {}) {
   const startedAt = Date.now();
   const steps = [];
   const snapshots = [];
+  const shotDir = prepareShotDir(opts.screenshotDir, opts.screenshotTag);
   let failure = null;
 
   const browser = await chromium.launch();
@@ -32,7 +35,8 @@ export async function runJourney(journey) {
       try {
         const snap = await executeStep(page, step, journey);
         if (snap) snapshots.push(snap);
-        steps.push({ index, type: step.type, label: step.label || null, ms: Date.now() - t0, status: 'ok' });
+        const shot = await captureShot(page, shotDir, index, step);
+        steps.push({ index, type: step.type, label: step.label || null, ms: Date.now() - t0, status: 'ok', screenshot: shot });
       } catch (err) {
         const status = step.optional ? 'skipped' : 'error';
         steps.push({ index, type: step.type, label: step.label || null, ms: Date.now() - t0, status, error: err.message });
@@ -68,9 +72,15 @@ export async function runJourney(journey) {
 // before it is saved: a selector the discovery agent invented but that does not
 // exist on the page should be caught here, not on the first real run. Needs no
 // AQA credentials, so discovery works in demo mode.
-export async function dryRunJourney(journey) {
+//
+// M7: when screenshotDir is set, captures a PNG after every successful step
+// so the proposal review UI can show a visual timeline of the journey
+// alongside the selector table. Falls back gracefully if the screenshot
+// write fails - a proposal is still valid without its thumbnails.
+export async function dryRunJourney(journey, opts = {}) {
   const startedAt = Date.now();
   const steps = [];
+  const shotDir = prepareShotDir(opts.screenshotDir, opts.screenshotTag);
   let failure = null;
 
   const browser = await chromium.launch();
@@ -82,7 +92,8 @@ export async function dryRunJourney(journey) {
       const t0 = Date.now();
       try {
         await executeStep(page, step, journey, true);
-        steps.push({ index, type: step.type, ms: Date.now() - t0, status: 'ok' });
+        const shot = await captureShot(page, shotDir, index, step);
+        steps.push({ index, type: step.type, ms: Date.now() - t0, status: 'ok', screenshot: shot });
       } catch (err) {
         const status = step.optional ? 'skipped' : 'error';
         steps.push({ index, type: step.type, ms: Date.now() - t0, status, error: err.message });
@@ -97,6 +108,41 @@ export async function dryRunJourney(journey) {
   }
 
   return { ok: !failure, error: failure, ms: Date.now() - startedAt, steps };
+}
+
+// Screenshots land under a per-invocation subdirectory so a re-discovery
+// wipe (see startDiscovery) can prune an old batch without touching
+// screenshots the current run still refers to. Tag is a short identifier
+// the control plane supplies (proposal index, journey id, ...) so filenames
+// stay meaningful when they show up in the UI.
+function prepareShotDir(root, tag) {
+  if (!root) return null;
+  try {
+    const dir = tag ? resolve(root, String(tag)) : resolve(root);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch (err) {
+    console.error('screenshot dir setup failed:', err.message);
+    return null;
+  }
+}
+
+async function captureShot(page, dir, index, step) {
+  if (!dir) return null;
+  const kind = step.type === 'snapshot' ? 'snap' : step.type;
+  const filename = `step-${String(index).padStart(2, '0')}-${kind}.png`;
+  const path = join(dir, filename);
+  try {
+    // Viewport-sized (not full-page) keeps thumbnails snappy in the review
+    // grid; a proposal can have a dozen of these and full-page shots would
+    // balloon the payload without adding review value.
+    await page.screenshot({ path, fullPage: false, animations: 'disabled', timeout: 5000 });
+    return filename;
+  } catch (err) {
+    // A page that never renders (about:blank on a broken step) can throw
+    // here. Screenshots are advisory, so drop them rather than fail the run.
+    return null;
+  }
 }
 
 // A bounded structural summary of what a user can interact with on a page.

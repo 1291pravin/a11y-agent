@@ -46,7 +46,8 @@ const server = createServer(async (req, res) => {
       // In demo mode the journey still walks and captures its snapshot points;
       // it just is not scored (see journey-run snapshot()). Only a scored run
       // needs AQA credentials, so refusing here would block verifying the walk.
-      const result = await enqueue(() => runJourney(journey));
+      const opts = { screenshotDir: body.screenshotDir || null, screenshotTag: body.screenshotTag || null };
+      const result = await enqueue(() => runJourney(journey, opts));
       console.log(`run ${journey.id || journey.name}: ${result.ok ? 'ok' : 'failed'}${result.scored ? '' : ' (unscored)'} in ${result.ms} ms, ${result.snapshots.length} snapshot(s)`);
       return json(res, 200, result);
     }
@@ -66,7 +67,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const journey = body?.journey;
       if (!journey?.steps?.length) return json(res, 400, { error: 'body must be {journey} with a non-empty steps array' });
-      const result = await enqueue(() => dryRunJourney(journey));
+      const opts = { screenshotDir: body.screenshotDir || null, screenshotTag: body.screenshotTag || null };
+      const result = await enqueue(() => dryRunJourney(journey, opts));
       console.log(`dryrun ${journey.name || journey.id}: ${result.ok ? 'ok' : 'failed'} in ${result.ms} ms`);
       return json(res, 200, result);
     }

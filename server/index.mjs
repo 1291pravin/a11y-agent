@@ -14,9 +14,11 @@ import { hasFleetConfig } from './bootstrap.mjs';
 import { resumePolling } from './orchestrator.mjs';
 import { initScheduler, schedulerEnabled } from './scheduler.mjs';
 import { listenAvailable } from './listen-port.mjs';
+import { screenshotRoot } from './journey-propose.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(__dirname, '..', 'web');
+const SCREENSHOT_ROOT = screenshotRoot();
 const PREFERRED_PORT = Number(process.env.PORT) || 4173;
 const PORT_STRICT = process.env.PORT_STRICT === '1' || process.env.PORT_STRICT === 'true';
 
@@ -27,12 +29,20 @@ const MIME = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
 };
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
+    // M7: dry-run and journey-run screenshots live under data/screenshots/
+    // and are served here so the UI can drop the runner-returned URL
+    // straight into an <img src>. Path is scoped to SCREENSHOT_ROOT so a
+    // walk like /screenshots/../.env cannot escape.
+    if (url.pathname.startsWith('/screenshots/')) return await serveScreenshot(url.pathname, res);
     return await serveStatic(url.pathname, res);
   } catch (err) {
     console.error(`${req.method} ${url.pathname}:`, err.message);
@@ -54,6 +64,26 @@ async function serveStatic(pathname, res) {
     const data = await readFile(join(WEB_ROOT, 'index.html'));
     res.writeHead(200, { 'content-type': MIME['.html'] });
     res.end(data);
+  }
+}
+
+async function serveScreenshot(pathname, res) {
+  const rel = pathname.replace(/^\/screenshots\//, '');
+  const file = normalize(join(SCREENSHOT_ROOT, decodeURIComponent(rel)));
+  if (!file.startsWith(SCREENSHOT_ROOT)) { res.writeHead(403); return res.end(); }
+  try {
+    const data = await readFile(file);
+    res.writeHead(200, {
+      'content-type': MIME[extname(file)] || 'application/octet-stream',
+      // Cache aggressively - screenshot filenames include the step index and
+      // a re-discovery wipes the directory, so a URL that still resolves
+      // is always the same bytes.
+      'cache-control': 'public, max-age=3600, immutable',
+    });
+    res.end(data);
+  } catch {
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'screenshot not found' }));
   }
 }
 
