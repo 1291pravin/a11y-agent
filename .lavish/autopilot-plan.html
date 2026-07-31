@@ -1,0 +1,1898 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A11y Autopilot — Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f4f8fc;
+    --surface: #ffffff;
+    --surface-2: #eaf3fb;
+    --ink: #002a46;
+    --ink-soft: #36566c;
+    --ink-faint: #698295;
+    --line: #d4e2ee;
+    --accent: #0068ff;
+    --accent-hover: #0054ce;
+    --accent-soft: #e8f1ff;
+    --navy: #002a46;
+    --good: #087f5b;
+    --good-bg: #e8f7f1;
+    --warn: #9a5a00;
+    --warn-bg: #fff4df;
+    --crit: #c72c41;
+    --crit-bg: #fff0f2;
+    --run: #0068ff;
+    --run-bg: #e8f1ff;
+    --radius: 10px;
+    --shadow: 0 8px 24px rgba(0, 42, 70, 0.07);
+    --shadow-lg: 0 20px 48px rgba(0, 42, 70, 0.14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #061d2c;
+      --surface: #0c2a3c;
+      --surface-2: #12364b;
+      --ink: #f4f9fc;
+      --ink-soft: #bad0de;
+      --ink-faint: #86a3b5;
+      --line: #24485e;
+      --accent: #4b95ff;
+      --accent-hover: #72acff;
+      --accent-soft: #123b65;
+      --good: #65d6aa;
+      --good-bg: #123c32;
+      --warn: #ffc56b;
+      --warn-bg: #493617;
+      --crit: #ff8e9d;
+      --crit-bg: #4a242c;
+      --run: #72acff;
+      --run-bg: #123b65;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  :where(.grid, .row, .cols, .cluster) > * { min-width: 0; }
+  :where(p, h1, h2, h3, h4, h5, h6, li, dd, blockquote, td, th) { overflow-wrap: anywhere; }
+  :where(img, svg, video, canvas, iframe) { max-width: 100%; height: auto; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "DM Sans", -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    font-size: 14.5px; line-height: 1.55;
+  }
+  code, pre, kbd { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+  /* Layout */
+  .shell { max-width: 1280px; margin: 0 auto; padding: 40px 44px 96px; position: relative; }
+  .shell::before {
+    content: ""; position: absolute; z-index: 0; width: 640px; height: 220px;
+    top: -140px; right: -160px;
+    border: 26px solid rgba(0, 104, 255, 0.09); border-top: 0; border-radius: 0 0 50% 50%;
+    transform: rotate(5deg); pointer-events: none;
+  }
+  .shell > * { position: relative; z-index: 1; }
+
+  /* Sticky top nav */
+  .topnav {
+    position: sticky; top: 0; z-index: 30; background: var(--bg);
+    padding: 12px 0 12px; margin-bottom: 24px;
+    display: flex; align-items: center; gap: 20px;
+    border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  }
+  .topnav .brand {
+    font-weight: 700; letter-spacing: -0.02em; color: var(--navy);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .topnav .brand .dot { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .topnav nav a {
+    color: var(--ink-soft); text-decoration: none; font-size: 13px; padding: 6px 10px;
+    border-radius: 999px; transition: 150ms ease;
+  }
+  .topnav nav a:hover { color: var(--accent); background: var(--accent-soft); }
+  .topnav .spacer { flex: 1 }
+  .topnav .tag {
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+    background: var(--accent-soft); color: var(--accent); padding: 4px 10px; border-radius: 999px;
+  }
+
+  /* Typography */
+  h1 { font-size: clamp(34px, 4vw, 52px); font-weight: 700; letter-spacing: -0.035em; line-height: 1.05; margin: 0 0 14px; color: var(--navy); }
+  h2 { font-size: clamp(22px, 2.4vw, 30px); font-weight: 700; letter-spacing: -0.028em; margin: 56px 0 8px; color: var(--navy); }
+  h2 .num { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 12px; font-weight: 700; }
+  h3 { font-size: 18px; font-weight: 700; margin: 24px 0 8px; color: var(--navy); }
+  h4 { font-size: 14px; font-weight: 700; margin: 16px 0 6px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ink-soft); }
+  p.lead { font-size: 18px; color: var(--ink-soft); max-width: 780px; margin: 0 0 24px; }
+  p { margin: 0 0 12px; color: var(--ink-soft); }
+  strong { color: var(--ink); font-weight: 600; }
+  a { color: var(--accent); }
+  ul, ol { padding-left: 20px; margin: 8px 0 12px; }
+  li { color: var(--ink-soft); margin: 4px 0; }
+  .section-lead { color: var(--ink-soft); max-width: 780px; margin: 4px 0 20px; }
+
+  /* Cards, chips, badges */
+  .card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 20px; box-shadow: var(--shadow);
+  }
+  .card + .card { margin-top: 16px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px;
+    font-size: 11.5px; font-weight: 600; border-radius: 999px; letter-spacing: 0.01em;
+    background: var(--surface-2); color: var(--ink-soft); border: 1px solid var(--line);
+  }
+  .chip.good { background: var(--good-bg); color: var(--good); border-color: transparent; }
+  .chip.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+  .chip.crit { background: var(--crit-bg); color: var(--crit); border-color: transparent; }
+  .chip.run  { background: var(--run-bg);  color: var(--run);  border-color: transparent; }
+  .chip.new  { background: #f2ebff; color: #6a2bd9; border-color: transparent; }
+  @media (prefers-color-scheme: dark) { .chip.new { background: #2c1c46; color: #c7b4ff; } }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 13px; font-weight: 700; padding: 9px 16px;
+    border-radius: 8px; background: var(--accent); color: #fff; border: 1px solid transparent;
+    text-decoration: none;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn.ghost { background: transparent; color: var(--accent); border-color: var(--accent); }
+  .btn.sm { padding: 6px 12px; font-size: 12px; }
+  .btn.big { padding: 12px 22px; font-size: 14px; }
+
+  /* Grid helpers */
+  .grid { display: grid; gap: 16px; }
+  .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 900px) { .cols-3, .cols-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 640px) { .cols-2, .cols-3, .cols-4 { grid-template-columns: 1fr; } }
+
+  /* Hero */
+  .hero {
+    background: linear-gradient(135deg, var(--navy) 0%, #003a63 60%, #0068ff 100%);
+    color: #fff; padding: 44px 40px 40px; border-radius: 16px;
+    box-shadow: var(--shadow-lg); position: relative; overflow: hidden;
+  }
+  .hero::after {
+    content: ""; position: absolute; width: 420px; height: 420px; right: -140px; bottom: -220px;
+    border: 22px solid rgba(255,255,255,0.09); border-radius: 50%;
+  }
+  .hero h1 { color: #fff; }
+  .hero p { color: #d7e6f4; font-size: 17px; max-width: 720px; }
+  .hero .kpis { display: flex; gap: 40px; margin-top: 24px; flex-wrap: wrap; }
+  .hero .kpi .n { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; }
+  .hero .kpi .l { font-size: 12px; color: #b7cee0; text-transform: uppercase; letter-spacing: 0.08em; }
+  .hero .pill {
+    display: inline-flex; gap: 6px; align-items: center;
+    background: rgba(255,255,255,0.14); color: #fff; padding: 6px 14px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 600; margin-bottom: 14px;
+    backdrop-filter: blur(6px);
+  }
+
+  /* Before / After */
+  .compare { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .compare { grid-template-columns: 1fr; } }
+  .compare .card { padding: 24px; }
+  .compare .card.before { border-top: 4px solid var(--warn); }
+  .compare .card.after  { border-top: 4px solid var(--good); }
+  .compare .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 700; color: var(--ink-faint); }
+  .compare ul { margin: 8px 0 0; padding-left: 18px; }
+  .compare li { margin: 6px 0; }
+  .compare .card.before li::marker { color: var(--warn); }
+  .compare .card.after  li::marker { color: var(--good); }
+
+  /* Screen mockup shell */
+  .screen {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
+    box-shadow: var(--shadow-lg); overflow: hidden; margin-top: 20px;
+  }
+  .screen .browser-bar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: var(--surface-2); border-bottom: 1px solid var(--line);
+  }
+  .browser-bar .dots { display: flex; gap: 6px; }
+  .browser-bar .dots i { display: block; width: 10px; height: 10px; border-radius: 50%; background: #d4dee6; }
+  .browser-bar .dots i:nth-child(1) { background: #ff5f57; }
+  .browser-bar .dots i:nth-child(2) { background: #febc2e; }
+  .browser-bar .dots i:nth-child(3) { background: #28c840; }
+  .browser-bar .url {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    padding: 5px 10px; font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+    color: var(--ink-faint); flex: 1; max-width: 520px;
+  }
+  .screen .app {
+    display: grid; grid-template-columns: 216px 1fr; min-height: 480px;
+  }
+  .screen .side {
+    background: var(--navy); color: #c6d7e2; padding: 20px 14px; font-size: 12.5px;
+    position: relative; overflow: hidden;
+  }
+  .screen .side::after {
+    content: ""; position: absolute; width: 200px; height: 80px; left: -46px; bottom: 80px;
+    border: 15px solid rgba(0, 104, 255, 0.35); border-top: 0; border-radius: 0 0 50% 50%;
+    transform: rotate(-8deg); pointer-events: none;
+  }
+  .screen .side .logo {
+    background: #fff; color: var(--navy); padding: 8px 10px; border-radius: 8px;
+    font-weight: 700; margin-bottom: 16px; font-size: 12px; text-align: center;
+  }
+  .screen .side .product { color: #fff; font-weight: 700; margin: 0 4px 10px; font-size: 13px; }
+  .screen .side a {
+    display: block; padding: 7px 10px; border-radius: 6px; color: #c6d7e2; text-decoration: none;
+    margin-bottom: 2px;
+  }
+  .screen .side a.on { background: var(--accent); color: #fff; font-weight: 700; }
+  .screen .body { padding: 24px 28px; min-width: 0; }
+  .crumb { font-size: 11.5px; color: var(--ink-faint); margin-bottom: 4px; }
+  .screen .body h1 { font-size: 24px; margin-bottom: 4px; }
+  .screen .body h2 { font-size: 15px; font-weight: 700; margin: 22px 0 8px; }
+  .screen .body .lead { font-size: 13.5px; color: var(--ink-soft); }
+
+  /* Field / form styling inside mockups */
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12px; font-weight: 700; color: var(--ink); margin-bottom: 5px; letter-spacing: 0.01em; }
+  .field .lblx { font-weight: 400; color: var(--ink-faint); margin-left: 6px; }
+  .field .input, .field textarea, .field select {
+    width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--surface); color: var(--ink); font: inherit; font-size: 13px;
+  }
+  .field textarea { min-height: 100px; resize: vertical; line-height: 1.5; }
+  .field .input:focus, .field textarea:focus, .field select:focus {
+    outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+  }
+  .field .hint { font-size: 11.5px; color: var(--ink-faint); margin-top: 4px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .row2 { grid-template-columns: 1fr; } }
+
+  /* Prompt textarea (highlight the change) */
+  .prompt-box {
+    border: 2px dashed var(--accent); background: var(--accent-soft);
+    padding: 14px; border-radius: 10px; margin-top: 4px;
+  }
+  .prompt-box::before {
+    content: "NEW"; display: inline-block; background: var(--accent); color: #fff;
+    padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700;
+    letter-spacing: 0.1em; margin-bottom: 6px;
+  }
+
+  /* Stat blocks */
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+  @media (max-width: 720px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .stat {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+  }
+  .stat .l { font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: 0.08em; }
+  .stat .n { font-size: 26px; font-weight: 700; color: var(--navy); letter-spacing: -0.02em; }
+  .stat .d { font-size: 11.5px; color: var(--ink-faint); }
+  .stat.crit .n { color: var(--crit); }
+  .stat.warn .n { color: var(--warn); }
+  .stat.good .n { color: var(--good); }
+  .stat.run  .n { color: var(--run); }
+
+  /* Screenshot placeholders for mockup */
+  .shot {
+    background: linear-gradient(135deg, #dfeaf5, #c8dbec);
+    border-radius: 8px; aspect-ratio: 16 / 10; display: flex; align-items: end; justify-content: start;
+    padding: 8px; color: var(--navy); font-size: 11px; font-weight: 600;
+    position: relative; overflow: hidden; border: 1px solid var(--line);
+  }
+  @media (prefers-color-scheme: dark) {
+    .shot { background: linear-gradient(135deg, #123b5c, #0f2e47); color: #cfe0ef; }
+  }
+  .shot::before {
+    content: ""; position: absolute; inset: 8px 8px 30px;
+    background:
+      linear-gradient(to bottom, rgba(255,255,255,0.85), rgba(255,255,255,0.85)) top/100% 18px no-repeat,
+      linear-gradient(to bottom, rgba(255,255,255,0.35), rgba(255,255,255,0.35)) 0 24px/60% 8px no-repeat,
+      linear-gradient(to bottom, rgba(255,255,255,0.35), rgba(255,255,255,0.35)) 0 36px/40% 8px no-repeat,
+      linear-gradient(to bottom, rgba(0, 104, 255, 0.35), rgba(0, 104, 255, 0.35)) right 8px top 8px / 60px 12px no-repeat;
+    border-radius: 4px;
+  }
+  @media (prefers-color-scheme: dark) {
+    .shot::before {
+      background:
+        linear-gradient(to bottom, rgba(255,255,255,0.15), rgba(255,255,255,0.15)) top/100% 18px no-repeat,
+        linear-gradient(to bottom, rgba(255,255,255,0.08), rgba(255,255,255,0.08)) 0 24px/60% 8px no-repeat,
+        linear-gradient(to bottom, rgba(255,255,255,0.08), rgba(255,255,255,0.08)) 0 36px/40% 8px no-repeat,
+        linear-gradient(to bottom, rgba(114, 172, 255, 0.5), rgba(114, 172, 255, 0.5)) right 8px top 8px / 60px 12px no-repeat;
+    }
+  }
+  .shot.checkout::before {
+    background:
+      linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)) top/100% 18px no-repeat,
+      linear-gradient(rgba(255,255,255,0.5), rgba(255,255,255,0.5)) 8px 30px/50% 10px no-repeat,
+      linear-gradient(rgba(255,255,255,0.5), rgba(255,255,255,0.5)) 8px 50px/40% 10px no-repeat,
+      linear-gradient(rgba(0, 104, 255, 0.65), rgba(0, 104, 255, 0.65)) right 8px bottom 8px / 100px 20px no-repeat;
+  }
+  .shot.cart::before {
+    background:
+      linear-gradient(rgba(255,255,255,0.85), rgba(255,255,255,0.85)) top/100% 18px no-repeat,
+      linear-gradient(rgba(255,255,255,0.5), rgba(255,255,255,0.5)) 8px 30px/30% 40px no-repeat,
+      linear-gradient(rgba(255,255,255,0.4), rgba(255,255,255,0.4)) 44% 30px/56% 12px no-repeat,
+      linear-gradient(rgba(255,255,255,0.4), rgba(255,255,255,0.4)) 44% 46px/40% 12px no-repeat,
+      linear-gradient(rgba(199, 44, 65, 0.7), rgba(199, 44, 65, 0.7)) right 8px bottom 8px / 90px 18px no-repeat;
+  }
+  .shot.login::before {
+    background:
+      linear-gradient(rgba(255,255,255,0.5), rgba(255,255,255,0.5)) center/50% 40% no-repeat,
+      linear-gradient(rgba(0, 104, 255, 0.7), rgba(0, 104, 255, 0.7)) center 65%/40% 12% no-repeat;
+  }
+  .shot .lbl {
+    background: rgba(0,0,0,0.65); color: #fff; padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.02em; position: relative; z-index: 2;
+  }
+
+  /* Journey proposal card */
+  .journey-card {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px; box-shadow: var(--shadow); position: relative;
+  }
+  .journey-card.selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
+  .journey-card .jhead {
+    display: flex; align-items: start; justify-content: space-between; gap: 8px; padding: 4px 4px 8px;
+  }
+  .journey-card .jhead h4 { margin: 0; font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--navy); }
+  .journey-card .jhead .jm { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+  .journey-card .stepstrip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  .journey-card .steplbl {
+    font-size: 10px; color: var(--ink-faint); padding: 4px 4px 0;
+    display: flex; justify-content: space-between;
+  }
+  .journey-card .jfoot { display: flex; align-items: center; justify-content: space-between; padding: 10px 4px 0; gap: 6px; }
+  .journey-card .jfoot .chk {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-soft); font-weight: 600;
+  }
+  .journey-card .jfoot .chk input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+  /* Kanban / lanes */
+  .lanes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  @media (max-width: 900px) { .lanes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .lane {
+    background: var(--surface-2); border-radius: 10px; padding: 10px; min-height: 220px;
+  }
+  .lane h5 {
+    margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--ink-faint); display: flex; justify-content: space-between; align-items: center;
+  }
+  .lane h5 .c {
+    background: var(--surface); color: var(--ink); border-radius: 999px; padding: 1px 8px;
+    font-size: 10.5px; font-weight: 700;
+  }
+  .taskcard {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 8px; font-size: 12px; box-shadow: 0 2px 6px rgba(0, 42, 70, 0.04);
+  }
+  .taskcard .t { font-weight: 700; color: var(--navy); font-size: 12.5px; margin-bottom: 3px; }
+  .taskcard .m { color: var(--ink-faint); font-size: 11px; }
+  .taskcard .tags { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+
+  /* Report bar chart */
+  .sevbar {
+    display: flex; height: 12px; border-radius: 999px; overflow: hidden;
+    background: var(--surface-2); margin: 4px 0;
+  }
+  .sevbar > i { display: block; height: 100%; }
+  .sevbar .c { background: var(--crit); }
+  .sevbar .s { background: var(--warn); }
+  .sevbar .m { background: var(--good); }
+  .sevlegend { display: flex; gap: 14px; font-size: 11.5px; color: var(--ink-faint); }
+  .sevlegend i {
+    display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 4px;
+  }
+
+  /* Cause table */
+  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tbl th {
+    text-align: left; font-size: 11px; color: var(--ink-faint); font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase; padding: 8px 10px; border-bottom: 1px solid var(--line);
+  }
+  .tbl td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .tbl tr:last-child td { border-bottom: 0; }
+  .tbl td.selector { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--ink-soft); }
+
+  /* Diff */
+  .diff {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px;
+  }
+  .diff .col {
+    border-radius: 8px; padding: 10px 12px; font-size: 12px; border: 1px solid var(--line);
+  }
+  .diff .col.a { background: var(--crit-bg); color: var(--crit); }
+  .diff .col.b { background: var(--good-bg); color: var(--good); }
+  .diff .col .kv { color: var(--ink-soft); font-size: 11px; }
+
+  /* Agent role cards */
+  .agents { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  @media (max-width: 900px) { .agents { grid-template-columns: 1fr; } }
+  .agent {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px;
+    box-shadow: var(--shadow); position: relative; overflow: hidden;
+  }
+  .agent::before {
+    content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 3px; background: var(--accent);
+  }
+  .agent.analyst::before { background: #6a2bd9; }
+  .agent.journey::before { background: var(--accent); }
+  .agent.report::before  { background: var(--warn); }
+  .agent.fix::before     { background: var(--good); }
+  .agent.verifier::before { background: var(--crit); }
+  .agent.autopilot::before { background: linear-gradient(90deg, #6a2bd9, var(--accent), var(--good)); }
+  .agent .role {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+  }
+  .agent .icon {
+    width: 32px; height: 32px; border-radius: 8px; background: var(--surface-2);
+    display: grid; place-items: center; font-size: 18px;
+  }
+  .agent .name { font-weight: 700; color: var(--navy); font-size: 15px; }
+  .agent .sub { font-size: 11.5px; color: var(--ink-faint); }
+  .agent .kv { font-size: 11.5px; color: var(--ink-soft); margin-top: 8px; }
+  .agent .kv b { color: var(--ink); }
+  .agent ul { margin: 6px 0 0; padding-left: 18px; font-size: 12.5px; }
+
+  /* Milestone timeline */
+  .timeline { position: relative; padding-left: 32px; margin-top: 8px; }
+  .timeline::before {
+    content: ""; position: absolute; left: 12px; top: 6px; bottom: 6px; width: 2px; background: var(--line);
+  }
+  .milestone { position: relative; padding: 12px 0 22px; }
+  .milestone::before {
+    content: ""; position: absolute; left: -26px; top: 16px; width: 14px; height: 14px;
+    background: var(--surface); border: 3px solid var(--accent); border-radius: 50%;
+    box-shadow: 0 0 0 4px var(--bg);
+  }
+  .milestone.done::before { background: var(--accent); border-color: var(--accent); }
+  .milestone .mhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .milestone .mid { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--accent); font-weight: 700; }
+  .milestone h3 { margin: 0; font-size: 16px; }
+  .milestone .mmeta { font-size: 11.5px; color: var(--ink-faint); }
+
+  /* Risk table */
+  .risks .card { padding: 14px 16px; }
+  .risk .rl { font-weight: 700; color: var(--navy); font-size: 13.5px; }
+  .risk .rsub { color: var(--ink-faint); font-size: 11.5px; }
+  .risk .rm { color: var(--ink-soft); font-size: 12.5px; margin-top: 6px; }
+  .sev-h { color: var(--crit); }
+  .sev-m { color: var(--warn); }
+  .sev-l { color: var(--good); }
+
+  /* Question card */
+  .qcard { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px; padding: 16px 18px; margin-bottom: 12px; }
+  .qcard .qq { font-weight: 700; color: var(--navy); }
+  .qcard .qopts { margin-top: 6px; font-size: 13px; color: var(--ink-soft); }
+
+  /* Mermaid */
+  .mermaid { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px; margin-top: 12px; }
+
+  /* Footer */
+  footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 12.5px; }
+
+  /* Small utility */
+  .kbd { font-family: "JetBrains Mono", monospace; font-size: 11.5px; background: var(--surface-2); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--line); }
+  .caret { color: var(--ink-faint); margin: 0 4px; }
+  .hr { height: 1px; background: var(--line); margin: 24px 0; border: 0; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <div class="topnav">
+    <div class="brand"><span class="dot"></span> A11y Autopilot — Product Plan</div>
+    <nav>
+      <a href="#vision">Vision</a>
+      <a href="#flow">User Flow</a>
+      <a href="#agents">Agents</a>
+      <a href="#screens">Screens</a>
+      <a href="#data">Data + API</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#risks">Risks</a>
+      <a href="#decisions">Decisions</a>
+    </nav>
+    <span class="spacer"></span>
+    <span class="tag">v1 · Plan · Not built yet</span>
+  </div>
+
+  <!-- ═════════════════════════════════ HERO ═════════════════════════════════ -->
+  <section id="vision" class="hero">
+    <div class="pill">One-time setup · hands-off from here on</div>
+    <h1>Ship a11y-clean releases without touching accessibility again.</h1>
+    <p>Customer drops in a <strong>website URL + a repo</strong> once. The system analyzes the site, drafts journeys with real screenshots, gets human sign-off, runs the audit, and then loops autonomously: fix agents open PRs, a verifier spins a dev server and re-runs the journey locally, PRs merge, the system re-scans. Regressions get their own fix task. Weekly, forever.</p>
+    <div class="kpis">
+      <div class="kpi"><div class="n">1</div><div class="l">Manual step: approve journeys</div></div>
+      <div class="kpi"><div class="n">6</div><div class="l">Collaborating agents</div></div>
+      <div class="kpi"><div class="n">∞</div><div class="l">Autopilot iterations</div></div>
+      <div class="kpi"><div class="n">0</div><div class="l">Days between finding &amp; fixing</div></div>
+    </div>
+  </section>
+
+  <!-- ═════════════════════════════════ WHAT CHANGES ═════════════════════════════════ -->
+  <h2><span class="num">01</span> What changes</h2>
+  <p class="section-lead">The current app already covers onboarding, journey discovery, Cursor dispatch, and post-merge verification. This plan closes the loop and makes it truly hands-off.</p>
+
+  <div class="compare">
+    <div class="card before">
+      <span class="label">Today</span>
+      <h3>Discrete, human-triggered steps</h3>
+      <ul>
+        <li>Quick scan uses <b>checkbox focus areas</b> — Home, Menu, Cart, etc.</li>
+        <li>Journey proposals show step text only — <b>no screenshots</b>.</li>
+        <li>After accepting proposals, the user still has to click <b>Run</b> on each journey.</li>
+        <li>Fix dispatch is <b>per cause</b>, one at a time.</li>
+        <li>Post-merge verification hits the <b>remote AQA suite</b> only — no local proof.</li>
+        <li>Regressions require the user to re-dispatch manually.</li>
+        <li>Site analysis is limited to what the runner sees on a single page inspection.</li>
+      </ul>
+    </div>
+    <div class="card after">
+      <span class="label">After this plan</span>
+      <h3>One-shot setup, continuous multi-agent loop</h3>
+      <ul>
+        <li><b>Free-form intent prompt</b> replaces checkboxes: "we sell cosmetics in FR/EN, biggest a11y risk is checkout &amp; the cookie banner".</li>
+        <li>An <b>Analyst agent</b> crawls the site broadly, builds a page taxonomy, cross-references the repo.</li>
+        <li>Proposed journeys include <b>Playwright screenshots</b> per step — visual approve/remove.</li>
+        <li>Approval automatically runs <b>Evaluate</b> across all approved journeys and delivers a report.</li>
+        <li><b>Fix All</b> dispatches a bounded batch of agents in parallel (Cursor Cloud &amp; CLI).</li>
+        <li>New <b>Local Verifier</b> service spins the dev server, re-runs the journey on the PR branch, and posts before/after screenshots to the PR.</li>
+        <li><b>Autopilot</b> re-scans on schedule, auto-dispatches, learns from failed attempts, budgets itself.</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════ USER FLOW ═════════════════════════════════ -->
+  <h2 id="flow"><span class="num">02</span> The end-to-end flow</h2>
+  <p class="section-lead">The only human decision points are the two green diamonds. Everything else runs itself.</p>
+
+  <div class="mermaid">
+flowchart TD
+  A[Customer:<br/>URL + repo + intent prompt] --> B[Analyst agent<br/>crawls site + reads repo]
+  B --> C[Journey Designer<br/>drafts N journeys]
+  C --> D[Runner does dry-run<br/>+ per-step screenshots]
+  D --> E{Human approves<br/>journeys?}
+  E -- edit / remove --> C
+  E -- approve --> F[Evaluate every approved journey<br/>via AQA /evaluate]
+  F --> G[Report + severity breakdown]
+  G --> H{Fix All?}
+  H -- No --> Z((Site parked<br/>autopilot off))
+  H -- Yes / Autopilot on --> I[Fix Coordinator<br/>plans batch]
+  I --> J[N Fix Agents in parallel<br/>Cursor Cloud / CLI]
+  J --> K[PR opened per cause]
+  K --> L[Local Verifier<br/>checkout + npm ci + dev server]
+  L --> M[Re-run journey on localhost:PORT]
+  M --> N{Cause cleared?}
+  N -- no --> O[Post feedback to PR + re-dispatch<br/>with prior-attempt memory]
+  O --> J
+  N -- yes --> P[Post 'ready to merge' comment<br/>+ before/after screenshots]
+  P --> Q{Human merges<br/>or auto-merge policy}
+  Q --> R[Post-merge full rescan]
+  R --> S{Regressions?}
+  S -- yes --> I
+  S -- no --> T[Schedule next weekly scan]
+  T -.-> B
+
+  classDef human fill:#e8f1ff,stroke:#0068ff,color:#002a46;
+  class E,Q human;
+  classDef bad fill:#fff0f2,stroke:#c72c41,color:#c72c41;
+  class O bad;
+  classDef good fill:#e8f7f1,stroke:#087f5b,color:#087f5b;
+  class P,T good;
+  </div>
+
+  <!-- ═════════════════════════════════ AGENTS ═════════════════════════════════ -->
+  <h2 id="agents"><span class="num">03</span> The multi-agent system</h2>
+  <p class="section-lead">Six agents, each with a narrow job. A deterministic <em>Coordinator</em> owns the state machine so LLMs never call AQA/Cursor/GitHub directly. This preserves the codebase's "model plans, deterministic scripts execute" rule.</p>
+
+  <h3 style="margin-top:16px">Interaction map</h3>
+  <div class="mermaid">
+graph LR
+  subgraph "Control plane (server/)"
+    COORD[Coordinator<br/>state machine + budgets]
+    STORE[(State store<br/>SQLite / JSON)]
+  end
+  subgraph "LLM-planning agents"
+    ANALYST[Analyst<br/>site + repo]
+    DESIGNER[Journey Designer]
+    REPORTER[Report Composer]
+    FIXPLAN[Fix Planner<br/>prior-attempt memory]
+  end
+  subgraph "Executors (deterministic)"
+    RUNNER[Journey Runner<br/>Playwright + screenshots]
+    VERIFIER[Local Verifier<br/>dev server + Playwright]
+    CURSOR[Cursor client<br/>Cloud / CLI]
+    AQA[AQA client<br/>suite + evaluate]
+    GH[GitHub client<br/>webhook + PR API]
+  end
+
+  COORD --> ANALYST
+  COORD --> DESIGNER
+  COORD --> RUNNER
+  RUNNER --> AQA
+  COORD --> REPORTER
+  COORD --> FIXPLAN
+  FIXPLAN --> CURSOR
+  CURSOR --> GH
+  GH --> COORD
+  COORD --> VERIFIER
+  VERIFIER --> AQA
+  VERIFIER --> GH
+  COORD <---> STORE
+  ANALYST -.-> STORE
+  DESIGNER -.-> STORE
+
+  classDef llm fill:#f2ebff,stroke:#6a2bd9,color:#2a1361;
+  class ANALYST,DESIGNER,REPORTER,FIXPLAN llm;
+  classDef det fill:#e8f7f1,stroke:#087f5b,color:#053825;
+  class RUNNER,VERIFIER,CURSOR,AQA,GH det;
+  classDef core fill:#e8f1ff,stroke:#0068ff,color:#002a46;
+  class COORD,STORE core;
+  </div>
+
+  <div class="agents" style="margin-top: 16px">
+    <div class="agent analyst">
+      <div class="role"><div class="icon">◎</div><div><div class="name">Analyst</div><div class="sub">Site &amp; repo comprehension</div></div></div>
+      <div class="kv"><b>Model:</b> composer-2.5 (planning) · <b>Kind:</b> LLM + tools</div>
+      <div class="kv"><b>Tools:</b> HTTP crawler, Playwright inspect, repo scanner (existing <code>mapper.mjs</code>), sitemap.xml reader</div>
+      <ul>
+        <li>Reads the customer prompt.</li>
+        <li>Crawls up to N pages (BFS, same-origin, budget-bound).</li>
+        <li>Detects framework (Next / Nuxt / Astro / Vue / plain), CSS system, i18n roots.</li>
+        <li>Emits a page taxonomy: <em>Home / PDP / PLP / Cart / Checkout / Account / Legal / Localized twins</em>.</li>
+        <li>Feeds Journey Designer + Fix Planner with repo tokens (class, data-testid, aria-label).</li>
+      </ul>
+    </div>
+
+    <div class="agent journey">
+      <div class="role"><div class="icon">↦</div><div><div class="name">Journey Designer</div><div class="sub">Turns intent + taxonomy into journeys</div></div></div>
+      <div class="kv"><b>Model:</b> composer-2.5 · <b>Kind:</b> LLM (structured JSON out)</div>
+      <div class="kv"><b>Tools:</b> journey step schema, focus prompt, dry-run validator</div>
+      <ul>
+        <li>Produces 4–12 candidate journeys with <code>goto / click / fill / hover / waitFor / snapshot</code> steps.</li>
+        <li>Marks cookie-banner clicks <code>optional:true</code>.</li>
+        <li>Guarantees at least one <code>snapshot</code> per journey with a rulesetId.</li>
+        <li>Coordinator sends each to the Runner for dry-run + screenshots before showing to human.</li>
+      </ul>
+    </div>
+
+    <div class="agent report">
+      <div class="role"><div class="icon">▤</div><div><div class="name">Report Composer</div><div class="sub">User-facing findings</div></div></div>
+      <div class="kv"><b>Model:</b> composer-2.5 · <b>Kind:</b> LLM (narrative on top of deterministic totals)</div>
+      <div class="kv"><b>Tools:</b> cause store, journey lastRun, prior deltas</div>
+      <ul>
+        <li>Extends the existing markdown report with prose &amp; prioritization.</li>
+        <li>Groups causes by <em>impact area</em>: Perceivable / Operable / Understandable / Robust.</li>
+        <li>Suggests dispatch order: severity × cross-page reach.</li>
+      </ul>
+    </div>
+
+    <div class="agent fix">
+      <div class="role"><div class="icon">⚒</div><div><div class="name">Fix Agents (fleet)</div><div class="sub">Actual code fixes → PR</div></div></div>
+      <div class="kv"><b>Provider:</b> Cursor Cloud (composer-2.5) or Cursor CLI (local) — same shape</div>
+      <div class="kv"><b>Kind:</b> Autonomous coding agents, budgeted by Coordinator</div>
+      <ul>
+        <li>One agent per root cause.</li>
+        <li>Prompt now carries <em>prior failed-attempt evidence</em> (from previous verifier runs).</li>
+        <li>Concurrency capped per site (default 3) so the account doesn't burn budget in one shot.</li>
+        <li>Existing cloud→CLI fallback path is reused as-is.</li>
+      </ul>
+    </div>
+
+    <div class="agent verifier">
+      <div class="role"><div class="icon">◉</div><div><div class="name">Local Verifier</div><div class="sub">New service — proves the fix works</div></div></div>
+      <div class="kv"><b>Kind:</b> Deterministic executor · <b>Port:</b> 4175</div>
+      <div class="kv"><b>Tools:</b> git, npm/pnpm, Playwright, AQA evaluate</div>
+      <ul>
+        <li>Checks the PR branch out into a scratch worktree.</li>
+        <li>Runs the detected install &amp; dev-server command (or explicit user config).</li>
+        <li>Health-checks the URL, re-runs the offending journey against <code>localhost</code>.</li>
+        <li>Posts a PR comment: before/after screenshots, cause delta, verdict.</li>
+        <li>On <em>fail</em>: writes evidence into the state store so the next Fix Agent sees it.</li>
+      </ul>
+    </div>
+
+    <div class="agent autopilot">
+      <div class="role"><div class="icon">☰</div><div><div class="name">Autopilot Coordinator</div><div class="sub">The state machine + safety rails</div></div></div>
+      <div class="kv"><b>Kind:</b> Deterministic · Node module in <code>server/</code></div>
+      <div class="kv"><b>Tools:</b> scheduler, budgets, kill switch, activity feed</div>
+      <ul>
+        <li>Owns every transition: <em>analyzing → proposing → approved → scanning → fixing → verifying → merged → verified → regressed</em>.</li>
+        <li>Weekly re-scan cadence (existing scheduler, extended).</li>
+        <li>Respects <em>maxAgentsInFlight</em>, <em>maxPRsPerDay</em>, <em>maxRetriesPerCause</em>.</li>
+        <li>Auto-pauses if 3 consecutive verifier fails on the same cause → escalates to human.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h4>Where the LLM is <em>not</em> allowed</h4>
+    <p style="margin-top:6px">Nothing LLM-generated calls AQA, Cursor, or GitHub free-hand. The Analyst emits JSON that a deterministic function validates against a schema before any HTTP call. Fix Agents run in Cursor's sandbox, not ours. This preserves the existing design rule from <code>PLAN.md</code>: <em>the model plans and triages; deterministic scripts execute</em>.</p>
+  </div>
+
+  <!-- ═════════════════════════════════ FIX RUN STATE MACHINE ═════════════════════════════════ -->
+  <h3 style="margin-top:36px">State machine — a single fix attempt</h3>
+  <div class="mermaid">
+stateDiagram-v2
+  [*] --> queued
+  queued --> planning: budget available
+  planning --> dispatching
+  dispatching --> fixing: agent launched
+  fixing --> pr_opened: Cursor FINISHED w/ PR
+  fixing --> failed: agent error / deadline
+  pr_opened --> local_verifying: PR branch known
+  local_verifying --> ready_to_merge: journey passes on branch
+  local_verifying --> reopened: cause still present
+  reopened --> planning: attempt < maxRetries
+  reopened --> escalated: attempt >= maxRetries
+  ready_to_merge --> merged: human / auto merge
+  merged --> post_merge_verifying
+  post_merge_verifying --> done: cause absent in prod
+  post_merge_verifying --> regressed: cause back
+  regressed --> planning
+  escalated --> [*]
+  done --> [*]
+  failed --> [*]
+  </div>
+
+  <!-- ═════════════════════════════════ SCREEN MOCKUPS ═════════════════════════════════ -->
+  <h2 id="screens"><span class="num">04</span> Screen designs</h2>
+  <p class="section-lead">Eight screens carry the full flow. Every mockup below drops into the existing app shell (left sidebar + main pane) so you can picture it in the real product.</p>
+
+  <!-- Screen 1: Onboarding v2 -->
+  <h3 style="margin-top:24px">Screen 1 — Onboarding v2 <span class="chip new">changed</span></h3>
+  <p>Same two-path chooser, but the Quick-scan form now replaces focus checkboxes with a <b>free-form intent textarea</b> and gains an optional dev-server config block. That single textarea is what the Analyst + Journey Designer condition on.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/onboard/quick</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a>Dashboard</a>
+        <a>Sites</a>
+        <a class="on">Onboard</a>
+        <a>Journeys</a>
+        <a>Tasks</a>
+        <a>PRs</a>
+        <a>Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb"><a href="#">Onboard</a> <span class="caret">/</span> Quick scan</div>
+        <h1>Quick scan &nbsp;<span class="chip good">no suite needed</span></h1>
+        <div class="lead">Give us a URL, a repo, and a sentence about the site. We do the rest.</div>
+
+        <div class="row2" style="margin-top:20px">
+          <div class="field">
+            <label>Website URL</label>
+            <input class="input" value="https://fr.filorga.com">
+          </div>
+          <div class="field">
+            <label>Ruleset</label>
+            <select class="input"><option>WCAG 2.1 AA (auto only)</option></select>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>Local repo folder <span class="lblx">unlocks auto-fix &amp; local verify</span></label>
+            <input class="input" value="/Users/pravin/repos/filorga-storefront">
+          </div>
+          <div class="field">
+            <label>GitHub repo <span class="lblx">owner/name</span></label>
+            <input class="input" value="filorga/storefront">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Tell us about the site <span class="lblx">what it does, who uses it, biggest a11y worries</span></label>
+          <div class="prompt-box">
+            <textarea style="width:100%; border:0; background:transparent; resize:vertical; font: inherit; font-size: 13.5px; color: var(--ink); min-height:88px; outline:0">Cosmetics e-commerce in FR and EN. Big worry is the checkout (3-step) and the cookie banner blocking search. Users are mostly 45+ so we care a lot about contrast and font sizing. Please cover: homepage, PDP, add-to-cart, checkout, account login. Skip the blog.</textarea>
+          </div>
+          <div class="hint">The Analyst reads this alongside your site &amp; repo. Free-form is fine — the more context, the fewer wrong journeys we propose.</div>
+        </div>
+
+        <details style="margin: 8px 0 4px">
+          <summary style="cursor:pointer; font-size:12px; font-weight:700; color: var(--accent)">Dev server for local verification (optional but recommended)</summary>
+          <div style="border-left: 2px solid var(--line); margin-top: 10px; padding: 4px 0 4px 14px">
+            <div class="row2">
+              <div class="field"><label>Install command</label><input class="input" value="pnpm install --frozen-lockfile"></div>
+              <div class="field"><label>Start command</label><input class="input" value="pnpm dev"></div>
+            </div>
+            <div class="row2">
+              <div class="field"><label>Preview URL</label><input class="input" value="http://localhost:3000"></div>
+              <div class="field"><label>Health path <span class="lblx">optional</span></label><input class="input" value="/"></div>
+            </div>
+            <div class="hint">Autodetected from package.json when you save. The verifier will run this on every PR branch.</div>
+          </div>
+        </details>
+
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px">
+          <a class="btn ghost" href="#">Back</a>
+          <a class="btn" href="#">Analyze &amp; propose journeys</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 2: Analysis in progress -->
+  <h3 style="margin-top:40px">Screen 2 — Deep analysis (in progress) <span class="chip new">new</span></h3>
+  <p>The Analyst can take a couple of minutes on a big site. The user shouldn't stare at a spinner — show what's happening. Pages appear as they're discovered; screenshots stream in.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/site/site-1042/analyzing</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a>Dashboard</a>
+        <a class="on">Sites</a>
+        <a>Onboard</a>
+        <a>Journeys</a>
+        <a>Tasks</a>
+        <a>PRs</a>
+        <a>Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb"><a href="#">Sites</a> <span class="caret">/</span> fr.filorga.com <span class="caret">/</span> Analyzing</div>
+        <h1>Analyzing fr.filorga.com <span class="chip run">analysis · 01:47 elapsed</span></h1>
+        <div class="lead">Reading your site &amp; repo. This is a one-time deep pass — subsequent runs skip most of this.</div>
+
+        <div class="stats" style="margin-top:16px">
+          <div class="stat"><div class="l">Pages crawled</div><div class="n">37</div><div class="d">of ~50 planned</div></div>
+          <div class="stat"><div class="l">Repo files indexed</div><div class="n">1,248</div><div class="d">Next.js 14 · Tailwind</div></div>
+          <div class="stat run"><div class="l">Screenshots</div><div class="n">12</div><div class="d">taken so far</div></div>
+          <div class="stat"><div class="l">Languages found</div><div class="n">2</div><div class="d">FR (default), EN</div></div>
+        </div>
+
+        <h2>Live progress</h2>
+        <div class="card" style="padding: 0; overflow: hidden;">
+          <div style="display:grid; grid-template-columns: 160px 1fr auto; gap: 0;">
+            <div style="padding: 10px 14px; background: var(--good-bg); color: var(--good); font-weight:700; font-size:12px; border-bottom:1px solid var(--line)">✓ Crawl seed</div>
+            <div style="padding: 10px 14px; font-size: 12.5px; color: var(--ink-soft); border-bottom:1px solid var(--line)">Loaded sitemap.xml (48 URLs). Detected French default locale.</div>
+            <div style="padding: 10px 14px; font-size: 11px; color: var(--ink-faint); border-bottom:1px solid var(--line)">0:04</div>
+
+            <div style="padding: 10px 14px; background: var(--good-bg); color: var(--good); font-weight:700; font-size:12px; border-bottom:1px solid var(--line)">✓ Repo scan</div>
+            <div style="padding: 10px 14px; font-size: 12.5px; color: var(--ink-soft); border-bottom:1px solid var(--line)">Framework: Next.js 14 App Router. UI: shadcn/ui + Radix. i18n: next-intl.</div>
+            <div style="padding: 10px 14px; font-size: 11px; color: var(--ink-faint); border-bottom:1px solid var(--line)">0:18</div>
+
+            <div style="padding: 10px 14px; background: var(--run-bg); color: var(--run); font-weight:700; font-size:12px; border-bottom:1px solid var(--line)">◐ Page taxonomy</div>
+            <div style="padding: 10px 14px; font-size: 12.5px; color: var(--ink-soft); border-bottom:1px solid var(--line)">Classifying 37 pages... 12 PDPs · 4 PLPs · Home · Cart · Checkout(3) · Account(4) · Legal(6)</div>
+            <div style="padding: 10px 14px; font-size: 11px; color: var(--ink-faint); border-bottom:1px solid var(--line)">1:12</div>
+
+            <div style="padding: 10px 14px; background: var(--run-bg); color: var(--run); font-weight:700; font-size:12px; border-bottom:1px solid var(--line)">◐ Screenshots</div>
+            <div style="padding: 10px 14px; font-size: 12.5px; color: var(--ink-soft); border-bottom:1px solid var(--line)">Capturing representative pages via Playwright...</div>
+            <div style="padding: 10px 14px; font-size: 11px; color: var(--ink-faint); border-bottom:1px solid var(--line)">1:47</div>
+
+            <div style="padding: 10px 14px; color: var(--ink-faint); font-weight:600; font-size:12px">◌ Draft journeys</div>
+            <div style="padding: 10px 14px; font-size: 12.5px; color: var(--ink-faint)">Queued</div>
+            <div style="padding: 10px 14px; font-size: 11px; color: var(--ink-faint)">—</div>
+          </div>
+        </div>
+
+        <h2>Pages found so far</h2>
+        <div class="grid cols-4">
+          <div class="shot"><span class="lbl">/</span></div>
+          <div class="shot cart"><span class="lbl">/panier</span></div>
+          <div class="shot checkout"><span class="lbl">/checkout/livraison</span></div>
+          <div class="shot login"><span class="lbl">/connexion</span></div>
+          <div class="shot"><span class="lbl">/produits/anti-age</span></div>
+          <div class="shot"><span class="lbl">/produits/serum-c-vital</span></div>
+          <div class="shot checkout"><span class="lbl">/checkout/paiement</span></div>
+          <div class="shot"><span class="lbl">/compte/commandes</span></div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px">
+          <a class="btn ghost" href="#">Pause analysis</a>
+          <a class="btn" href="#" style="opacity:0.5; pointer-events:none">Review proposed journeys →</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 3: Journey approval with screenshots -->
+  <h3 style="margin-top:40px">Screen 3 — Approve journeys, with screenshots <span class="chip new">changed</span></h3>
+  <p>The existing <code>#/site/:id/proposed</code> screen gets a screenshot strip per journey. Users can approve/edit/remove per journey <em>and</em> per step. "Approve all &amp; scan" auto-runs Evaluate on every approved journey.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/site/site-1042/proposed</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a>Dashboard</a>
+        <a class="on">Sites</a>
+        <a>Onboard</a>
+        <a>Journeys</a>
+        <a>Tasks</a>
+        <a>PRs</a>
+        <a>Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb"><a href="#">Sites</a> <span class="caret">/</span> fr.filorga.com <span class="caret">/</span> Proposed journeys</div>
+        <h1>Review 6 proposed journeys <span class="chip run">4 selected</span></h1>
+        <div class="lead">The Analyst read your intent: <em>"...checkout and cookie banner blocking search..."</em>. We prioritized those. Untick anything you don't want, or drop a screenshot to skip that step.</div>
+
+        <div class="grid cols-2" style="margin-top:16px">
+
+          <div class="journey-card selected">
+            <div class="jhead">
+              <div>
+                <h4>Homepage → cookie banner → search</h4>
+                <div class="jm">4 steps · 2 snapshots · 480ms dry-run</div>
+              </div>
+              <div><span class="chip good">passed dry-run</span></div>
+            </div>
+            <div class="stepstrip">
+              <div class="shot"><span class="lbl">1. goto /</span></div>
+              <div class="shot"><span class="lbl">2. banner</span></div>
+              <div class="shot"><span class="lbl">3. focus</span></div>
+              <div class="shot"><span class="lbl">4. search</span></div>
+            </div>
+            <div class="jfoot">
+              <label class="chk"><input type="checkbox" checked> Include</label>
+              <div>
+                <a class="btn ghost sm" href="#">Edit steps</a>
+                <a class="btn ghost sm" href="#">Regenerate</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="journey-card selected">
+            <div class="jhead">
+              <div>
+                <h4>PDP → add to cart → panier</h4>
+                <div class="jm">5 steps · 3 snapshots · 720ms dry-run</div>
+              </div>
+              <div><span class="chip good">passed</span></div>
+            </div>
+            <div class="stepstrip">
+              <div class="shot"><span class="lbl">1. PDP</span></div>
+              <div class="shot"><span class="lbl">2. options</span></div>
+              <div class="shot cart"><span class="lbl">3. cart</span></div>
+              <div class="shot cart"><span class="lbl">4. drawer</span></div>
+            </div>
+            <div class="jfoot">
+              <label class="chk"><input type="checkbox" checked> Include</label>
+              <div><a class="btn ghost sm" href="#">Edit steps</a><a class="btn ghost sm" href="#">Regenerate</a></div>
+            </div>
+          </div>
+
+          <div class="journey-card selected">
+            <div class="jhead">
+              <div>
+                <h4>Checkout — livraison → paiement</h4>
+                <div class="jm">7 steps · 4 snapshots · 1.3s dry-run</div>
+              </div>
+              <div><span class="chip good">passed</span></div>
+            </div>
+            <div class="stepstrip">
+              <div class="shot cart"><span class="lbl">1. cart</span></div>
+              <div class="shot checkout"><span class="lbl">2. livraison</span></div>
+              <div class="shot checkout"><span class="lbl">3. paiement</span></div>
+              <div class="shot checkout"><span class="lbl">4. review</span></div>
+            </div>
+            <div class="jfoot">
+              <label class="chk"><input type="checkbox" checked> Include</label>
+              <div><a class="btn ghost sm" href="#">Edit steps</a><a class="btn ghost sm" href="#">Regenerate</a></div>
+            </div>
+          </div>
+
+          <div class="journey-card selected">
+            <div class="jhead">
+              <div>
+                <h4>Connexion (login)</h4>
+                <div class="jm">3 steps · 1 snapshot · 320ms dry-run</div>
+              </div>
+              <div><span class="chip good">passed</span></div>
+            </div>
+            <div class="stepstrip">
+              <div class="shot"><span class="lbl">1. goto /</span></div>
+              <div class="shot login"><span class="lbl">2. /connexion</span></div>
+              <div class="shot login"><span class="lbl">3. form</span></div>
+              <div class="shot"><span class="lbl">—</span></div>
+            </div>
+            <div class="jfoot">
+              <label class="chk"><input type="checkbox" checked> Include</label>
+              <div><a class="btn ghost sm" href="#">Edit steps</a><a class="btn ghost sm" href="#">Regenerate</a></div>
+            </div>
+          </div>
+
+          <div class="journey-card">
+            <div class="jhead">
+              <div>
+                <h4>Blog article read-through</h4>
+                <div class="jm">3 steps · 1 snapshot · 240ms dry-run</div>
+              </div>
+              <div><span class="chip">deprioritized</span></div>
+            </div>
+            <div class="stepstrip">
+              <div class="shot"><span class="lbl">1. /blog</span></div>
+              <div class="shot"><span class="lbl">2. post</span></div>
+              <div class="shot"><span class="lbl">3. scroll</span></div>
+              <div class="shot"><span class="lbl">—</span></div>
+            </div>
+            <div class="jfoot">
+              <label class="chk"><input type="checkbox"> Skipped — prompt said "skip blog"</label>
+              <div><a class="btn ghost sm" href="#">Include anyway</a></div>
+            </div>
+          </div>
+
+          <div class="journey-card selected">
+            <div class="jhead">
+              <div>
+                <h4>Account · commandes</h4>
+                <div class="jm">4 steps · 2 snapshots · 610ms dry-run</div>
+              </div>
+              <div><span class="chip warn">login flakey</span></div>
+            </div>
+            <div class="stepstrip">
+              <div class="shot login"><span class="lbl">1. login</span></div>
+              <div class="shot"><span class="lbl">2. account</span></div>
+              <div class="shot"><span class="lbl">3. orders</span></div>
+              <div class="shot"><span class="lbl">4. detail</span></div>
+            </div>
+            <div class="jfoot">
+              <label class="chk"><input type="checkbox" checked> Include</label>
+              <div><a class="btn ghost sm" href="#">Set test credentials</a></div>
+            </div>
+          </div>
+
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px; gap:12px; flex-wrap:wrap">
+          <div style="font-size:12.5px; color: var(--ink-soft)">
+            <b>4 approved</b> · will run Evaluate on ~13 snapshots · est. 2 min
+          </div>
+          <div style="display:flex; gap:8px">
+            <a class="btn ghost" href="#">Save as draft</a>
+            <a class="btn big" href="#">Approve &amp; scan →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 4: Report + Fix All -->
+  <h3 style="margin-top:40px">Screen 4 — Report &amp; Fix All <span class="chip new">changed</span></h3>
+  <p>After Evaluate finishes, the user lands here. Existing markdown report is still available; this replaces the primary in-app view.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/site/site-1042/report</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a>Dashboard</a>
+        <a class="on">Sites</a>
+        <a>Onboard</a>
+        <a>Journeys</a>
+        <a>Tasks</a>
+        <a>PRs</a>
+        <a>Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb"><a href="#">Sites</a> <span class="caret">/</span> fr.filorga.com <span class="caret">/</span> Report</div>
+        <div style="display:flex; justify-content: space-between; align-items:flex-start; gap: 12px; flex-wrap: wrap">
+          <div>
+            <h1>fr.filorga.com <span class="chip crit">score 42/100</span></h1>
+            <div class="lead">First scan across 4 approved journeys, 13 snapshots. <b>27 root causes</b> found across <b>184 instances</b>.</div>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap: wrap; align-items:center">
+            <a class="btn ghost" href="#">Download .md</a>
+            <a class="btn big" href="#">⚡ Fix all 27 causes</a>
+          </div>
+        </div>
+
+        <div class="stats" style="margin-top:20px">
+          <div class="stat crit"><div class="l">Critical</div><div class="n">8</div><div class="d">54 instances</div></div>
+          <div class="stat warn"><div class="l">Serious</div><div class="n">14</div><div class="d">98 instances</div></div>
+          <div class="stat good"><div class="l">Minor</div><div class="n">5</div><div class="d">32 instances</div></div>
+          <div class="stat run"><div class="l">Auto-fixable</div><div class="n">21</div><div class="d">78% of open causes</div></div>
+        </div>
+
+        <h2>Severity breakdown</h2>
+        <div class="sevbar" style="height:16px">
+          <i class="c" style="width: 29%"></i>
+          <i class="s" style="width: 53%"></i>
+          <i class="m" style="width: 18%"></i>
+        </div>
+        <div class="sevlegend" style="margin-top:6px">
+          <span><i style="background: var(--crit)"></i>Critical 8</span>
+          <span><i style="background: var(--warn)"></i>Serious 14</span>
+          <span><i style="background: var(--good)"></i>Minor 5</span>
+        </div>
+
+        <h2>Top causes by impact</h2>
+        <div class="card" style="padding: 0">
+          <table class="tbl">
+            <thead><tr><th>Rule</th><th>Selector</th><th>Reach</th><th>Severity</th><th>Auto-fix</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><b>color-contrast</b><br><span style="font-size:11.5px; color: var(--ink-faint)">Text color contrast is too low</span></td>
+                <td class="selector">.product-card .price</td>
+                <td>4 pages · 48 instances</td>
+                <td><span class="chip crit">critical</span></td>
+                <td><span class="chip good">yes</span></td>
+              </tr>
+              <tr>
+                <td><b>image-alt</b><br><span style="font-size:11.5px; color: var(--ink-faint)">Image missing alt text</span></td>
+                <td class="selector">.product-gallery img</td>
+                <td>3 pages · 22 instances</td>
+                <td><span class="chip crit">critical</span></td>
+                <td><span class="chip good">yes</span></td>
+              </tr>
+              <tr>
+                <td><b>label</b></td>
+                <td class="selector">#checkout-form input[type=text]</td>
+                <td>2 pages · 18 instances</td>
+                <td><span class="chip crit">critical</span></td>
+                <td><span class="chip good">yes</span></td>
+              </tr>
+              <tr>
+                <td><b>heading-order</b></td>
+                <td class="selector">main .hero h3</td>
+                <td>1 page · 4 instances</td>
+                <td><span class="chip warn">serious</span></td>
+                <td><span class="chip good">yes</span></td>
+              </tr>
+              <tr>
+                <td><b>aria-required-attr</b></td>
+                <td class="selector">[role=dialog].cookie-banner</td>
+                <td>All pages · 1 instance</td>
+                <td><span class="chip warn">serious</span></td>
+                <td><span class="chip warn">manual review</span></td>
+              </tr>
+              <tr>
+                <td><b>form-field-multiple-labels</b></td>
+                <td class="selector">#login .email-field</td>
+                <td>1 page · 2 instances</td>
+                <td><span class="chip">minor</span></td>
+                <td><span class="chip good">yes</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2>What Fix All will do</h2>
+        <div class="card" style="background: var(--accent-soft); border-color: var(--accent)">
+          <div style="display:grid; grid-template-columns: 1fr auto; gap: 12px; align-items:center; flex-wrap:wrap">
+            <div>
+              <b>Dispatch 21 auto-fixable causes across 3 parallel Cursor agents.</b>
+              <div style="font-size: 12.5px; color: var(--ink-soft); margin-top: 4px">Estimated finish: 45 min · Estimated cost: ~$4.80 · 6 manual-review causes will be handed off as markdown.</div>
+            </div>
+            <div style="display:flex; gap:8px">
+              <a class="btn ghost" href="#">Dry run (no PRs)</a>
+              <a class="btn big" href="#">⚡ Dispatch batch</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 5: Fix All command center -->
+  <h3 style="margin-top:40px">Screen 5 — Fix All command center <span class="chip new">new</span></h3>
+  <p>Live view of parallel agents. Existing Tasks board grows a companion "Fix Run" view for batch dispatches. Each lane is a state; each card is a cause-turned-agent-run.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/site/site-1042/fix-runs/fr-2026-07-31</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a>Dashboard</a>
+        <a>Sites</a>
+        <a>Onboard</a>
+        <a>Journeys</a>
+        <a class="on">Tasks</a>
+        <a>PRs</a>
+        <a>Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb"><a href="#">fr.filorga.com</a> <span class="caret">/</span> Fix run · 2026-07-31 14:22</div>
+        <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start">
+          <div>
+            <h1>Fix run in flight <span class="chip run">14 / 21 in progress</span></h1>
+            <div class="lead">3 agents in parallel · 6 fixed &amp; verified · 1 escalated · elapsed 22 min · $2.10 of $6 budget</div>
+          </div>
+          <div style="display:flex; gap:8px">
+            <a class="btn ghost" href="#">Pause new dispatches</a>
+            <a class="btn ghost" href="#">Kill switch</a>
+          </div>
+        </div>
+
+        <div class="stats" style="margin-top:16px">
+          <div class="stat run"><div class="l">Fixing</div><div class="n">3</div><div class="d">Cursor · composer-2.5</div></div>
+          <div class="stat run"><div class="l">Verifying locally</div><div class="n">2</div><div class="d">Dev server on :3001-:3002</div></div>
+          <div class="stat warn"><div class="l">Awaiting merge</div><div class="n">4</div><div class="d">Human approval</div></div>
+          <div class="stat good"><div class="l">Done</div><div class="n">6</div><div class="d">Merged &amp; verified in prod</div></div>
+        </div>
+
+        <h2>Agents in flight</h2>
+        <div class="lanes">
+          <div class="lane">
+            <h5>Queued <span class="c">4</span></h5>
+            <div class="taskcard">
+              <div class="t">form-field-labels</div>
+              <div class="m">#checkout-form · 18 instances</div>
+              <div class="tags"><span class="chip">critical</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">landmark-one-main</div>
+              <div class="m">layout.tsx · all pages</div>
+              <div class="tags"><span class="chip">serious</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">focus-order</div>
+              <div class="m">.cookie-banner buttons</div>
+              <div class="tags"><span class="chip">serious</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">heading-order</div>
+              <div class="m">main .hero h3</div>
+              <div class="tags"><span class="chip">minor</span></div>
+            </div>
+          </div>
+          <div class="lane">
+            <h5>Fixing <span class="c">3</span></h5>
+            <div class="taskcard">
+              <div class="t">color-contrast</div>
+              <div class="m">Cursor Cloud · agent-8x9k · 06:12</div>
+              <div class="tags"><span class="chip crit">critical</span><span class="chip run">attempt 1</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">image-alt</div>
+              <div class="m">Cursor CLI · pid 8412 · 04:30</div>
+              <div class="tags"><span class="chip crit">critical</span><span class="chip run">attempt 1</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">aria-required-attr</div>
+              <div class="m">Cursor Cloud · agent-9p1s · 11:04</div>
+              <div class="tags"><span class="chip warn">serious</span><span class="chip crit">attempt 2</span></div>
+            </div>
+          </div>
+          <div class="lane">
+            <h5>Verifying <span class="c">2</span></h5>
+            <div class="taskcard">
+              <div class="t">button-name</div>
+              <div class="m">PR #1102 · localhost:3001 · re-run journey</div>
+              <div class="tags"><span class="chip warn">serious</span><span class="chip run">journey rerunning</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">nested-interactive</div>
+              <div class="m">PR #1103 · localhost:3002 · comparing delta</div>
+              <div class="tags"><span class="chip">minor</span></div>
+            </div>
+          </div>
+          <div class="lane">
+            <h5>Awaiting merge <span class="c">4</span></h5>
+            <div class="taskcard">
+              <div class="t">label</div>
+              <div class="m">PR #1098 · verifier ✓ · CI ✓</div>
+              <div class="tags"><span class="chip good">ready to merge</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">link-name</div>
+              <div class="m">PR #1099 · verifier ✓ · CI running</div>
+              <div class="tags"><span class="chip good">ready to merge</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">tabindex</div>
+              <div class="m">PR #1100 · verifier ✓</div>
+              <div class="tags"><span class="chip good">ready to merge</span></div>
+            </div>
+            <div class="taskcard">
+              <div class="t">region</div>
+              <div class="m">PR #1101 · verifier ✓</div>
+              <div class="tags"><span class="chip good">ready to merge</span></div>
+            </div>
+          </div>
+        </div>
+
+        <h2>Escalations · 1</h2>
+        <div class="card" style="border-left: 4px solid var(--crit)">
+          <div style="display:flex; justify-content: space-between; gap: 8px; align-items: flex-start; flex-wrap: wrap">
+            <div>
+              <div style="font-weight:700; color: var(--navy)">focus-visible on custom radio group</div>
+              <div style="font-size:12px; color: var(--ink-faint)">3 fix attempts · verifier failed each time · human review needed</div>
+            </div>
+            <div style="display:flex; gap:6px">
+              <a class="btn ghost sm" href="#">See last diff</a>
+              <a class="btn ghost sm" href="#">Retry with hint</a>
+              <a class="btn ghost sm" href="#">Mark as won't-fix</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 6: PR local verifier evidence -->
+  <h3 style="margin-top:40px">Screen 6 — PR page with local-verifier evidence <span class="chip new">new</span></h3>
+  <p>Every PR opened by a Fix Agent gets a verifier comment: <b>before/after screenshot pair</b>, cause delta, dev-server logs. This is what convinces a human to merge quickly.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/prs/1098</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a>Dashboard</a>
+        <a>Sites</a>
+        <a>Onboard</a>
+        <a>Journeys</a>
+        <a>Tasks</a>
+        <a class="on">PRs</a>
+        <a>Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb"><a href="#">PRs</a> <span class="caret">/</span> #1098</div>
+        <h1>#1098 · Add labels to checkout form fields <span class="chip good">verifier ✓ ready to merge</span></h1>
+        <div class="lead">Opened by Cursor agent-7j2m · Branch <code>a11y/fix-checkout-labels</code> · Fixes cause <code>label</code> (18 instances)</div>
+
+        <div class="stats" style="margin-top:16px">
+          <div class="stat"><div class="l">Files changed</div><div class="n">4</div><div class="d">+34 −12</div></div>
+          <div class="stat"><div class="l">Expected fix</div><div class="n">−18</div><div class="d">instances of "label"</div></div>
+          <div class="stat good"><div class="l">Verified fix</div><div class="n">−18</div><div class="d">on branch, local</div></div>
+          <div class="stat"><div class="l">CI</div><div class="n">✓</div><div class="d">green · 3m 12s</div></div>
+        </div>
+
+        <h2>Local verifier evidence</h2>
+        <div class="card" style="padding: 14px">
+          <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px">
+            <span class="chip good">verdict: pass</span>
+            <span class="chip">env: node 22 · pnpm 9 · Chromium 129</span>
+            <span class="chip">worktree /tmp/a11y-verify/1098</span>
+            <span class="chip run">ran journey "Checkout — livraison → paiement"</span>
+          </div>
+          <div class="diff">
+            <div class="col a">
+              <div style="font-weight:700; margin-bottom:4px">Before (main)</div>
+              <div class="kv">18 instances of <code>label</code></div>
+              <div class="shot checkout" style="margin-top:8px; aspect-ratio: 16/9"><span class="lbl">livraison — before</span></div>
+            </div>
+            <div class="col b">
+              <div style="font-weight:700; margin-bottom:4px">After (this PR)</div>
+              <div class="kv">0 instances of <code>label</code></div>
+              <div class="shot checkout" style="margin-top:8px; aspect-ratio: 16/9"><span class="lbl">livraison — after</span></div>
+            </div>
+          </div>
+          <div style="font-size: 11.5px; color: var(--ink-faint); margin-top: 10px">
+            Dev server: <code>pnpm dev</code> ready at :3001 in 6.2s · Journey completed in 1.4s · No regressions (0 new causes elsewhere in the journey).
+          </div>
+        </div>
+
+        <h2>Fix summary from the agent</h2>
+        <div class="card">
+          <div style="font-size: 13px; color: var(--ink-soft)">
+            <p>Wrapped every unlabelled input in <code>components/Checkout/*</code> with an explicit <code>&lt;Label htmlFor="…"&gt;</code>. Where a visible label already existed, added <code>aria-labelledby</code> and removed a duplicate <code>aria-label</code>. No visual regressions expected because Label uses the existing shadcn style. Fixed all 18 instances.</p>
+          </div>
+          <div style="display: flex; gap: 8px; margin-top: 8px">
+            <span class="chip">files: 4</span>
+            <span class="chip">tokens: 12.4k</span>
+            <span class="chip">runtime: 3m 47s</span>
+          </div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:8px; margin-top: 18px">
+          <a class="btn ghost" href="#">Open in GitHub</a>
+          <a class="btn ghost" href="#">Reject &amp; retry</a>
+          <a class="btn big" href="#">Mark merged</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 7: Autopilot dashboard -->
+  <h3 style="margin-top:40px">Screen 7 — Autopilot dashboard <span class="chip new">new</span></h3>
+  <p>The "set once, done" surface. Toggle autopilot per site, set concurrency &amp; budgets, watch the weekly loop tick over. This is where the customer never has to come back after week one.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/site/site-1042/autopilot</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a>Dashboard</a>
+        <a>Sites</a>
+        <a>Onboard</a>
+        <a>Journeys</a>
+        <a>Tasks</a>
+        <a>PRs</a>
+        <a class="on">Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb"><a href="#">Sites</a> <span class="caret">/</span> fr.filorga.com <span class="caret">/</span> Autopilot</div>
+        <h1>Autopilot for fr.filorga.com <span class="chip good">ON · next tick Tue 03:15 UTC</span></h1>
+        <div class="lead">Rescans weekly, dispatches fixes automatically inside the budgets you set. You'll get a Monday summary email.</div>
+
+        <div class="grid cols-2" style="margin-top:20px">
+          <div class="card">
+            <h4 style="margin: 0 0 8px">Policy</h4>
+            <div class="field" style="margin-bottom:10px">
+              <label>Autopilot mode</label>
+              <select class="input">
+                <option>Full — analyze · fix · verify · re-scan</option>
+                <option>Fixes only — I approve new journeys myself</option>
+                <option>Verify only — no auto-fix, only local verify PRs I open</option>
+                <option>Off</option>
+              </select>
+            </div>
+            <div class="row2">
+              <div class="field"><label>Max agents in flight</label><input class="input" value="3"></div>
+              <div class="field"><label>Max PRs per day</label><input class="input" value="8"></div>
+            </div>
+            <div class="row2">
+              <div class="field"><label>Max retries per cause</label><input class="input" value="3"></div>
+              <div class="field"><label>Weekly budget (USD)</label><input class="input" value="20"></div>
+            </div>
+            <div class="field">
+              <label>Merge policy</label>
+              <select class="input">
+                <option>Human merges (recommended)</option>
+                <option>Auto-merge when verifier passes + CI green + labels present</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="card">
+            <h4 style="margin: 0 0 8px">Verification environment</h4>
+            <div class="field"><label>Install command</label><input class="input" value="pnpm install --frozen-lockfile"></div>
+            <div class="field"><label>Start command</label><input class="input" value="pnpm dev"></div>
+            <div class="row2">
+              <div class="field"><label>Preview URL</label><input class="input" value="http://localhost:3000"></div>
+              <div class="field"><label>Ready timeout (s)</label><input class="input" value="60"></div>
+            </div>
+            <div class="field"><label>Environment file <span class="lblx">not committed to repo</span></label><input class="input" value=".env.verifier"></div>
+            <div class="hint">The verifier copies this file into the worktree so preview builds have the auth/API keys they need. Never leaves the runner host.</div>
+          </div>
+        </div>
+
+        <h2>Recent autopilot activity</h2>
+        <div class="card" style="padding: 0">
+          <table class="tbl">
+            <thead><tr><th>When</th><th>Event</th><th>Details</th></tr></thead>
+            <tbody>
+              <tr><td>Mon 03:15</td><td><span class="chip good">rescan done</span></td><td>3 new causes discovered · 2 old fixed &amp; stayed fixed</td></tr>
+              <tr><td>Mon 03:22</td><td><span class="chip run">dispatch</span></td><td>Batch of 3 causes started · budget $2.40 estimated</td></tr>
+              <tr><td>Mon 04:05</td><td><span class="chip good">verified</span></td><td>PR #1094 — <code>aria-required-children</code> — local verify pass</td></tr>
+              <tr><td>Mon 04:41</td><td><span class="chip good">merged &amp; verified</span></td><td>PR #1094 merged by @jesse · rescan confirmed fix in prod</td></tr>
+              <tr><td>Tue 02:11</td><td><span class="chip crit">regression</span></td><td>Cause <code>focus-visible</code> reappeared — re-dispatched with prior evidence</td></tr>
+              <tr><td>Tue 02:52</td><td><span class="chip warn">paused</span></td><td>Daily PR limit hit (8/8) — resumes in 22h 08m</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screen 8: Fleet dashboard update -->
+  <h3 style="margin-top:40px">Screen 8 — Fleet dashboard (autopilot column) <span class="chip">extension</span></h3>
+  <p>Existing dashboard grows one column so the fleet operator can see which sites are on autopilot and which are stalled.</p>
+  <div class="screen">
+    <div class="browser-bar">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <div class="url">a11y-agent.local / #/dashboard</div>
+    </div>
+    <div class="app">
+      <aside class="side">
+        <div class="logo">a11y</div>
+        <div class="product">A11y Autopilot</div>
+        <a class="on">Dashboard</a>
+        <a>Sites</a>
+        <a>Onboard</a>
+        <a>Journeys</a>
+        <a>Tasks</a>
+        <a>PRs</a>
+        <a>Autopilot</a>
+        <a>Settings</a>
+      </aside>
+      <div class="body">
+        <div class="crumb">Home</div>
+        <h1>Fleet — 12 sites</h1>
+        <div class="lead">9 on autopilot · 2 paused for approval · 1 escalated</div>
+        <div class="stats" style="margin-top:16px">
+          <div class="stat"><div class="l">Open causes</div><div class="n">142</div><div class="d">across 12 sites</div></div>
+          <div class="stat crit"><div class="l">Critical</div><div class="n">31</div><div class="d">−12 vs last week</div></div>
+          <div class="stat good"><div class="l">Fixed this week</div><div class="n">54</div><div class="d">by 8 PRs</div></div>
+          <div class="stat run"><div class="l">Agents in flight now</div><div class="n">4</div><div class="d">across 3 sites</div></div>
+        </div>
+        <h2>Sites</h2>
+        <div class="card" style="padding:0">
+          <table class="tbl">
+            <thead><tr><th>Site</th><th>Score</th><th>Open</th><th>Autopilot</th><th>Last event</th><th>Next tick</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><b>fr.filorga.com</b><br><span style="font-size:11.5px; color: var(--ink-faint)">Next.js 14 · FR</span></td>
+                <td><span class="chip crit">42</span></td>
+                <td>27</td>
+                <td><span class="chip good">ON · full</span></td>
+                <td>PR #1098 verified</td>
+                <td>Tue 03:15</td>
+              </tr>
+              <tr>
+                <td><b>eu.filorga.com</b></td>
+                <td><span class="chip warn">68</span></td>
+                <td>9</td>
+                <td><span class="chip good">ON · full</span></td>
+                <td>PR #204 merged</td>
+                <td>Wed 04:00</td>
+              </tr>
+              <tr>
+                <td><b>colgate.com</b></td>
+                <td><span class="chip good">88</span></td>
+                <td>3</td>
+                <td><span class="chip warn">Pause — verifier fail</span></td>
+                <td>focus-visible escalation</td>
+                <td>—</td>
+              </tr>
+              <tr>
+                <td><b>hillspet.com</b></td>
+                <td><span class="chip good">91</span></td>
+                <td>2</td>
+                <td><span class="chip good">ON · full</span></td>
+                <td>weekly summary sent</td>
+                <td>Thu 02:15</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════ DATA + API ═════════════════════════════════ -->
+  <h2 id="data"><span class="num">05</span> Data model &amp; API additions</h2>
+  <p class="section-lead">Small, additive changes. The existing SQLite/JSON store keeps its single top-level object; new fields nest inside existing entities.</p>
+
+  <h3>New fields on existing entities</h3>
+  <div class="card" style="padding: 0; overflow: hidden">
+    <table class="tbl">
+      <thead><tr><th style="width:150px">Entity</th><th style="width:220px">Field</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr>
+          <td rowspan="4"><b>site</b></td>
+          <td class="selector">analysis</td>
+          <td>Analyst output: <code>{ sitemap[], stack, i18n, narrative, updatedAt }</code></td>
+        </tr>
+        <tr><td class="selector">intent</td><td>Free-form user prompt from onboarding textarea. Passed to Analyst + Journey Designer + Fix Planner.</td></tr>
+        <tr><td class="selector">devServer</td><td><code>{ installCmd, startCmd, previewUrl, healthPath, readyTimeoutSec, envFile }</code>. Read by Local Verifier.</td></tr>
+        <tr><td class="selector">autopilot</td><td><code>{ mode, maxAgents, maxPRsPerDay, maxRetries, weeklyBudgetUsd, mergePolicy, lastTickAt }</code></td></tr>
+        <tr>
+          <td rowspan="2"><b>journey</b></td>
+          <td class="selector">screenshots</td>
+          <td><code>[{ stepIdx, path, viewport, capturedAt, bytes }]</code>. Runner captures on dry-run and every real run.</td>
+        </tr>
+        <tr><td class="selector">approvedAt</td><td>Timestamp of human approval — flips journey into "auto-run" pool.</td></tr>
+        <tr>
+          <td rowspan="2"><b>cause</b></td>
+          <td class="selector">attempts</td>
+          <td><code>[{ taskId, agentKind, prNum, verdict, verdictAt, evidence }]</code>. Memory for the next Fix Agent.</td>
+        </tr>
+        <tr><td class="selector">autoFixable</td><td>Boolean set by Report Composer from rule id (contrast/label/alt = yes; complex ARIA = manual).</td></tr>
+        <tr>
+          <td rowspan="2"><b>pr</b></td>
+          <td class="selector">verifier</td>
+          <td><code>{ verdict, ranAt, envSummary, beforeShot, afterShot, delta, logs }</code>. Populated by Local Verifier.</td>
+        </tr>
+        <tr><td class="selector">readyToMerge</td><td>Boolean: verifier passed + CI green + no blocking labels. Drives auto-merge policy.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:20px">New entities</h3>
+  <div class="card" style="padding: 0; overflow: hidden">
+    <table class="tbl">
+      <thead><tr><th style="width:150px">Entity</th><th>Shape</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>fixRun</b></td>
+          <td>
+            <code>{ id, siteId, causeIds[], taskIds[], state: planning|dispatching|fixing|verifying|reviewing|done|paused|failed, budgetUsd, spentUsd, startedAt, finishedAt, initiator: 'user'|'autopilot', attemptNo }</code>
+            <div style="font-size:11.5px; color: var(--ink-faint); margin-top:4px">One record per "Fix All" or autopilot tick. Groups the tasks for a single dispatch cycle.</div>
+          </td>
+        </tr>
+        <tr>
+          <td><b>analysisJob</b></td>
+          <td>
+            <code>{ id, siteId, state: crawling|indexing|classifying|screenshotting|proposing|done|failed, progress: {crawled, total, screenshotsTaken}, error, startedAt, finishedAt }</code>
+            <div style="font-size:11.5px; color: var(--ink-faint); margin-top:4px">Exposed via SSE for the "analyzing" screen.</div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:20px">API additions</h3>
+  <div class="card" style="padding: 0; overflow: hidden">
+    <table class="tbl">
+      <thead><tr><th style="width:78px">Method</th><th style="width:340px">Path</th><th>What it does</th></tr></thead>
+      <tbody>
+        <tr><td><b>POST</b></td><td class="selector">/api/sites/:id/analyze</td><td>Kick off deep analysis. Body: <code>{ intent, force? }</code>. 202 → job id.</td></tr>
+        <tr><td><b>GET</b></td><td class="selector">/api/sites/:id/analysis</td><td>Poll (or SSE stream) analysis progress + partial results.</td></tr>
+        <tr><td><b>POST</b></td><td class="selector">/api/sites/:id/journeys/preview</td><td>Extension of today's <code>/discover</code>: adds screenshots per snapshot step.</td></tr>
+        <tr><td><b>POST</b></td><td class="selector">/api/sites/:id/journeys/approve</td><td>Approve subset (accepts + auto-runs Evaluate on all approved).</td></tr>
+        <tr><td><b>POST</b></td><td class="selector">/api/sites/:id/fix-runs</td><td>Body: <code>{ causeIds?, all?, dryRun?, budgetUsd?, concurrency? }</code>. Returns fixRun id.</td></tr>
+        <tr><td><b>GET</b></td><td class="selector">/api/sites/:id/fix-runs</td><td>List batches. Query <code>?state=in-flight</code> for the command center.</td></tr>
+        <tr><td><b>GET</b></td><td class="selector">/api/fix-runs/:id</td><td>Live detail — feeds the command center screen.</td></tr>
+        <tr><td><b>POST</b></td><td class="selector">/api/fix-runs/:id/pause</td><td>Stop dispatching new tasks. In-flight ones finish.</td></tr>
+        <tr><td><b>POST</b></td><td class="selector">/api/fix-runs/:id/kill</td><td>Cancel remaining + attempt Cursor cancel where possible.</td></tr>
+        <tr><td><b>POST</b></td><td class="selector">/api/prs/:num/verify-local</td><td>Trigger the Local Verifier on demand.</td></tr>
+        <tr><td><b>PATCH</b></td><td class="selector">/api/sites/:id/autopilot</td><td>Update the autopilot policy object.</td></tr>
+        <tr><td><b>POST</b></td><td class="selector">/api/sites/:id/autopilot/pause</td><td>Kill switch — stops all scheduled ticks for this site.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 style="margin-top:20px">New process — <code>verifier/</code></h3>
+  <div class="card">
+    <p style="margin: 0"><b>Third process alongside <code>server/</code> and <code>runner/</code>.</b> Runs on port <code>4175</code> (loopback only). Owns:</p>
+    <ul style="margin: 8px 0 0">
+      <li>A pool of scratch worktrees under <code>data/verifier/&lt;prNum&gt;/</code>.</li>
+      <li>A single-slot child-process manager for dev servers (start / health / kill).</li>
+      <li>Its <em>own</em> Playwright instance (isolated from the runner so the two don't fight over Chromium).</li>
+      <li>A tiny HTTP API: <code>POST /verify</code>, <code>POST /kill</code>, <code>GET /health</code>.</li>
+    </ul>
+    <p style="margin: 12px 0 0; font-size: 12.5px; color: var(--ink-faint)">Kept separate because dev servers are heavyweight, sometimes hang, and eat memory. Killing the verifier process should never take the control plane or the journey runner down.</p>
+  </div>
+
+  <h3 style="margin-top:20px">New env vars</h3>
+  <div class="card" style="padding: 0; overflow: hidden">
+    <table class="tbl">
+      <thead><tr><th style="width:280px">Variable</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td class="selector">VERIFIER_URL</td><td>Where the control plane reaches the verifier (default http://127.0.0.1:4175).</td></tr>
+        <tr><td class="selector">VERIFIER_PORT / VERIFIER_HOST</td><td>Verifier listen address (loopback only).</td></tr>
+        <tr><td class="selector">VERIFIER_WORKTREE_DIR</td><td>Where scratch worktrees live. Default <code>data/verifier</code>.</td></tr>
+        <tr><td class="selector">VERIFIER_MAX_CONCURRENCY</td><td>Max simultaneous dev servers (default 2).</td></tr>
+        <tr><td class="selector">AUTOPILOT_ENABLED</td><td>Global master switch (per-site toggle still applies).</td></tr>
+        <tr><td class="selector">AUTOPILOT_TICK_MS</td><td>How often to check for weekly slot / regression re-dispatch.</td></tr>
+        <tr><td class="selector">FIX_RUN_MAX_CONCURRENCY</td><td>Global cap on Fix Agents in flight across all sites.</td></tr>
+        <tr><td class="selector">FIX_RUN_BUDGET_USD_DEFAULT</td><td>Per-batch soft budget default.</td></tr>
+        <tr><td class="selector">GITHUB_APP_ID / _KEY / _INSTALLATION</td><td>Optional: enables verifier PR comments &amp; auto-merge.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ═════════════════════════════════ ROADMAP ═════════════════════════════════ -->
+  <h2 id="roadmap"><span class="num">06</span> Roadmap</h2>
+  <p class="section-lead">Six milestones. Each is independently deployable — you can stop after any of them and still have a better product than today.</p>
+
+  <div class="timeline">
+    <div class="milestone">
+      <div class="mhead"><span class="mid">M6</span><h3>Free-form intent + streaming Analyst</h3><span class="chip">1–2 days</span></div>
+      <div class="mmeta">Replace focus checkboxes with a textarea. Wire intent all the way through <code>proposeWithLlm()</code>. Add streaming crawler that emits partial pages to state.</div>
+      <ul>
+        <li>UI: <code>viewOnboardQuick()</code> → textarea + optional dev-server block.</li>
+        <li>Backend: <code>site.intent</code> field, <code>startAnalysis()</code> in <code>server/analyzer.mjs</code> (new).</li>
+        <li>SSE endpoint <code>/api/sites/:id/analysis/stream</code> for the "analyzing" screen.</li>
+      </ul>
+    </div>
+
+    <div class="milestone">
+      <div class="mhead"><span class="mid">M7</span><h3>Playwright screenshots in dry-run + review</h3><span class="chip">2–3 days</span></div>
+      <div class="mmeta">Runner captures a screenshot at every snapshot step of every proposed journey. Stored as PNG under <code>data/screenshots/</code>. Proposal review screen shows the strip.</div>
+      <ul>
+        <li>Runner: add <code>page.screenshot()</code> to <code>journey-run.mjs</code> after each snapshot.</li>
+        <li>Server: static route <code>/screenshots/*</code>, ACL by admin token when set.</li>
+        <li>UI: overhaul <code>#/site/:id/proposed</code> to the design in Screen 3.</li>
+      </ul>
+    </div>
+
+    <div class="milestone">
+      <div class="mhead"><span class="mid">M8</span><h3>Approve → auto-scan → report</h3><span class="chip">2 days</span></div>
+      <div class="mmeta">Accepting proposals runs Evaluate on all in parallel and drops the user on a new consolidated Report screen. Report Composer LLM adds narrative &amp; prioritization.</div>
+      <ul>
+        <li>API: <code>POST /journeys/approve</code> replaces <code>/accept</code>; queues runs.</li>
+        <li>UI: <code>#/site/:id/report</code> (design in Screen 4).</li>
+        <li>Report keeps its markdown export.</li>
+      </ul>
+    </div>
+
+    <div class="milestone">
+      <div class="mhead"><span class="mid">M9</span><h3>Fix All batches + command center</h3><span class="chip">3–4 days</span></div>
+      <div class="mmeta">Batch dispatcher with concurrency caps, budget guardrails, and a live command-center view. Prior-attempt evidence is threaded into re-dispatched prompts.</div>
+      <ul>
+        <li>New entity <code>fixRun</code>.</li>
+        <li>Coordinator extends <code>orchestrator.mjs</code> with a scheduler loop for the fix run's lanes.</li>
+        <li>UI: <code>#/site/:id/fix-runs/:id</code> command center (Screen 5).</li>
+      </ul>
+    </div>
+
+    <div class="milestone">
+      <div class="mhead"><span class="mid">M10</span><h3>Local Verifier service</h3><span class="chip">4–5 days · biggest new bet</span></div>
+      <div class="mmeta">New <code>verifier/</code> process. Checkout branch → npm ci → dev server → re-run the failing journey against localhost → post PR comment with before/after screenshots + delta.</div>
+      <ul>
+        <li>Detect install/start from <code>package.json</code> when the user didn't fill them.</li>
+        <li>Isolate scratch worktrees with <code>git worktree add</code>.</li>
+        <li>Serve verifier evidence back to the control plane via <code>PATCH /pr/:num/verifier</code>.</li>
+        <li>UI: PR detail redesign (Screen 6).</li>
+      </ul>
+    </div>
+
+    <div class="milestone">
+      <div class="mhead"><span class="mid">M11</span><h3>Autopilot: scheduler + kill switches</h3><span class="chip">3 days</span></div>
+      <div class="mmeta">Extend existing weekly scheduler. Per-site autopilot policy. Regression detection auto-re-dispatches. Weekly summary emails. Kill switch on 3× verifier fail.</div>
+      <ul>
+        <li>UI: <code>#/site/:id/autopilot</code> (Screen 7) + <code>#/dashboard</code> column (Screen 8).</li>
+        <li>New <code>server/autopilot.mjs</code> — thin scheduler over the coordinator.</li>
+      </ul>
+    </div>
+
+    <div class="milestone">
+      <div class="mhead"><span class="mid">M12</span><h3>Cost, memory, weekly summary (polish)</h3><span class="chip">2 days</span></div>
+      <div class="mmeta">Per-site cost accounting from Cursor usage fields. Persisted "attempt memory" for causes so Fix Agents learn across weeks. Weekly summary email via a webhook of the user's choice.</div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════ RISKS ═════════════════════════════════ -->
+  <h2 id="risks"><span class="num">07</span> Risks &amp; controls</h2>
+  <p class="section-lead">This system spends money and opens PRs on your behalf. These are the ways it can go wrong, and how we contain each.</p>
+
+  <div class="risks grid cols-2" style="margin-top:12px">
+    <div class="card risk">
+      <div class="rl">Runaway Cursor spend <span class="sev-h">· HIGH</span></div>
+      <div class="rsub">A "Fix All" on a site with 200 causes could burn hundreds of dollars.</div>
+      <div class="rm"><b>Controls:</b> per-batch soft budget in USD (default $6, configurable). Max PRs/day cap. Max agents in flight cap. All dispatches recorded to <code>fixRun.spentUsd</code>. Kill switch pauses batches instantly.</div>
+    </div>
+    <div class="card risk">
+      <div class="rl">Fix agents pushing bad code <span class="sev-m">· MEDIUM</span></div>
+      <div class="rsub">A visual regression or broken behavior slipping into a merged PR.</div>
+      <div class="rm"><b>Controls:</b> Human merges by default. Local Verifier re-runs the journey against the PR branch <em>before</em> the PR is marked ready-to-merge, so a regression that breaks the flow blocks merge. Existing tests still run in CI. Autopilot never enables auto-merge without explicit opt-in.</div>
+    </div>
+    <div class="card risk">
+      <div class="rl">Dev server won't start on the CI-like verifier host <span class="sev-m">· MEDIUM</span></div>
+      <div class="rsub">Needs env secrets, DB, or GPU. Detection fails.</div>
+      <div class="rm"><b>Controls:</b> user configures install/start explicitly (Screen 1). Env file support (never committed, copied into scratch worktree). Fallback: verifier reports "environment unavailable, falling back to remote AQA rescan" — same behaviour as today for that PR.</div>
+    </div>
+    <div class="card risk">
+      <div class="rl">Journey Designer proposes wrong journeys <span class="sev-l">· LOW</span></div>
+      <div class="rsub">Misreads intent, picks blog article instead of checkout.</div>
+      <div class="rm"><b>Controls:</b> humans always approve proposals. Regeneration button per journey. Intent textarea persisted so re-analysis is cheap.</div>
+    </div>
+    <div class="card risk">
+      <div class="rl">Fix loops forever on an unfixable cause <span class="sev-m">· MEDIUM</span></div>
+      <div class="rsub">Same cause reopens 5×; each attempt burns tokens.</div>
+      <div class="rm"><b>Controls:</b> <code>maxRetries</code> per cause (default 3). After that: escalate to human with prior attempt diffs attached. Autopilot pauses the whole site if 3 escalations pile up.</div>
+    </div>
+    <div class="card risk">
+      <div class="rl">Verifier process leaks dev servers <span class="sev-l">· LOW</span></div>
+      <div class="rsub">Killed mid-run, orphaned Node processes eating RAM.</div>
+      <div class="rm"><b>Controls:</b> single-slot child process manager with pid tracking, verifier startup reaps orphans from <code>data/verifier/*.pid</code>, hard timeout on any single verify (default 5 min).</div>
+    </div>
+    <div class="card risk">
+      <div class="rl">AQA rate limit trips under Fix All <span class="sev-l">· LOW</span></div>
+      <div class="rsub">Multiple parallel evaluate calls + verifier evaluate = burst.</div>
+      <div class="rm"><b>Controls:</b> existing sliding-window limiter in <code>aqa.mjs</code> already covers this. Verifier shares the same budget via process-level env. Configurable <code>AQA_MAX_RPM</code>.</div>
+    </div>
+    <div class="card risk">
+      <div class="rl">Screenshots leak sensitive data <span class="sev-m">· MEDIUM</span></div>
+      <div class="rsub">Logged-in journey captures customer names, order numbers.</div>
+      <div class="rm"><b>Controls:</b> screenshots served only when admin token is set (or loopback). Optional <code>redactSelectors: [".customer-name"]</code> on journey — CSS-blur before capture. Retention default 30 days.</div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════ DECISIONS ═════════════════════════════════ -->
+  <h2 id="decisions"><span class="num">08</span> Decisions I need from you</h2>
+  <p class="section-lead">Answering these unlocks building. Each has a sensible default; call out where you want something different.</p>
+
+  <div class="grid cols-2">
+    <div class="qcard">
+      <div class="qq">1. Analyst crawl budget default</div>
+      <div class="qopts">How aggressive should the initial crawl be? <b>Default: 50 pages max, same-origin, depth 3.</b> Alternatives: unlimited (slow), 20 (fast), or user-tunable per site.</div>
+    </div>
+    <div class="qcard">
+      <div class="qq">2. Where does the verifier run?</div>
+      <div class="qopts">Same host as <code>runner/</code> is simplest. But if your team's dev machines can't spin dev servers cleanly, a dedicated Docker container per project (mounted repo) is safer. <b>Default: same host, plain Node child process.</b></div>
+    </div>
+    <div class="qcard">
+      <div class="qq">3. Auto-merge policy — off, opt-in, or per-site?</div>
+      <div class="qopts">Auto-merge feels great but is scary. <b>Default: OFF globally, per-site toggle available.</b> Even when ON, requires: verifier ✓ + CI ✓ + no <code>needs-human</code> label + severity ≠ manual-review.</div>
+    </div>
+    <div class="qcard">
+      <div class="qq">4. Analyst LLM cost — is composer-2.5 acceptable?</div>
+      <div class="qopts">Analysis is a one-time expensive call. <b>Default: composer-2.5, cached by URL hash for 7 days.</b> Alternative: cheaper model for classify-only, keep composer-2.5 for journey design.</div>
+    </div>
+    <div class="qcard">
+      <div class="qq">5. Screenshot storage &amp; retention</div>
+      <div class="qopts">Local filesystem is easy; S3 is cleaner for a fleet. <b>Default: local <code>data/screenshots/</code>, 30-day retention.</b> Alternative: pluggable, S3 supported.</div>
+    </div>
+    <div class="qcard">
+      <div class="qq">6. How opinionated should Journey Designer be?</div>
+      <div class="qopts">Two flavors: (a) <b>propose 4–6 tight journeys</b> aligned to intent (default), or (b) propose 10–15 covering every taxonomy bucket, user prunes. First is faster; second is more complete.</div>
+    </div>
+    <div class="qcard">
+      <div class="qq">7. Autopilot summary — where does it go?</div>
+      <div class="qopts">Email? Slack webhook? In-app only? <b>Default: in-app "Weekly digest" screen + optional webhook URL per site.</b></div>
+    </div>
+    <div class="qcard">
+      <div class="qq">8. Do we keep the "Full audit" path?</div>
+      <div class="qopts">The current AQA-suite path stays valid for enterprise customers who already have suites. The plan above extends the <em>Quick</em> path. <b>Default: both paths coexist; Full audit gets Autopilot for free once M11 lands.</b></div>
+    </div>
+  </div>
+
+  <!-- ═════════════════════════════════ WRAP ═════════════════════════════════ -->
+  <h2 style="margin-top: 56px"><span class="num">09</span> Recap</h2>
+  <div class="card">
+    <p style="color: var(--ink); font-size: 15px">If we build M6→M11 (roughly <b>15–18 working days</b>), the product goes from "user drives every step" to <b>"user drops in URL + repo + a sentence, approves 4 journeys once, then never comes back except to merge PRs"</b>. M12 removes even the merge step for teams that opt in.</p>
+    <p style="color: var(--ink-soft); font-size: 13.5px; margin-top: 8px">The bet with the highest new surface is the <b>Local Verifier</b> — a whole new process that runs dev servers on the fleet host. If you'd rather stage it, we can ship M6–M9 first (already a huge UX leap) and defer M10 by a sprint.</p>
+  </div>
+
+  <footer>
+    Plan lives at <code>.lavish/autopilot-plan.html</code> · Review, annotate, or paste feedback — I'll iterate.
+  </footer>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.esm.min.mjs";
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  const paint = document.createElement("canvas").getContext("2d");
+  function toRgba(color) {
+    paint.clearRect(0, 0, 1, 1);
+    paint.fillStyle = "#000";
+    paint.fillStyle = color;
+    paint.fillRect(0, 0, 1, 1);
+    return paint.getImageData(0, 0, 1, 1).data;
+  }
+  function compositeRgba(fg, bg) {
+    const fa = fg[3] / 255, ba = bg[3] / 255;
+    const a = fa + ba * (1 - fa);
+    if (a === 0) return [0, 0, 0, 0];
+    return [
+      (fg[0] * fa + bg[0] * ba * (1 - fa)) / a,
+      (fg[1] * fa + bg[1] * ba * (1 - fa)) / a,
+      (fg[2] * fa + bg[2] * ba * (1 - fa)) / a,
+      a * 255,
+    ];
+  }
+  function pageIsDark() {
+    const root = document.documentElement;
+    const rb = toRgba(getComputedStyle(root).backgroundColor);
+    const bb = document.body ? toRgba(getComputedStyle(document.body).backgroundColor) : [0,0,0,0];
+    const [r, g, b, a] = compositeRgba(bb, rb);
+    if (a > 0) return (0.2126*r + 0.7152*g + 0.0722*b) / 255 < 0.5;
+    return darkQuery.matches;
+  }
+  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.textContent }));
+  let applied, rendering = false, queued = false;
+  function queueRender() { queued = true; if (!rendering) void render(); }
+  async function render() {
+    rendering = true;
+    try {
+      while (queued) {
+        queued = false;
+        const theme = pageIsDark() ? "dark" : "default";
+        if (theme === applied) continue;
+        mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
+        for (const { el, src } of diagrams) { el.removeAttribute("data-processed"); el.textContent = src; }
+        try { await mermaid.run({ nodes: diagrams.map((d) => d.el) }); } catch (e) { console.error(e); return; }
+        applied = theme;
+      }
+    } finally { rendering = false; if (queued) queueRender(); }
+  }
+  if (document.readyState === "complete") queueRender();
+  else window.addEventListener("load", queueRender, { once: true });
+  darkQuery.addEventListener("change", queueRender);
+</script>
+</div>
+</body>
+</html>
