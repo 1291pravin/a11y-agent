@@ -18,7 +18,7 @@ import { join } from 'node:path';
 process.env.STORE_BACKEND = 'json';
 process.env.STATE_FILE = join(tmpdir(), `a11y-agent-discovery-${process.pid}.json`);
 
-const { proposeWithHeuristics, FOCUS_AREAS } = await import('../server/journey-propose.mjs');
+const { proposeWithHeuristics, deriveFocusFromIntent, screenshotUrl, screenshotRoot, FOCUS_AREAS } = await import('../server/journey-propose.mjs');
 
 // Shaped like a real runner /inspect response.
 const PAGE = {
@@ -108,4 +108,64 @@ test('every proposed step uses a selector that came from the inspected page', ()
 test('exposes the focus areas the UI offers', () => {
   assert.ok(FOCUS_AREAS.includes('Mega-menu'));
   assert.ok(FOCUS_AREAS.includes('Add to cart'));
+});
+
+// The free-form intent textarea (M6) replaces the focus chips as the primary
+// signal. When only intent is supplied, keyword extraction stands in for the
+// chip picks so the heuristic fallback still narrows correctly.
+test('derives focus areas from a free-form intent prompt', () => {
+  assert.deepEqual(
+    deriveFocusFromIntent('We really care about the checkout flow and the cookie banner.'),
+    ['Checkout'],
+  );
+  const t = deriveFocusFromIntent('Cover the homepage, add to cart, and the login form. Skip the blog.');
+  assert.ok(t.includes('Home'));
+  assert.ok(t.includes('Add to cart'));
+  assert.ok(t.includes('Login'));
+});
+
+test('intent narrows the heuristic proposals when no explicit focus is given', () => {
+  const out = proposeWithHeuristics({ page: PAGE, focus: [], intent: 'we only care about search please' });
+  assert.deepEqual(out.map((j) => j.name), ['Search']);
+});
+
+test('explicit focus wins over intent when both are given', () => {
+  // The operator ticked "Login" but wrote "search" in the prompt: chips win.
+  const out = proposeWithHeuristics({ page: PAGE, focus: ['Login'], intent: 'we only care about search' });
+  assert.deepEqual(out.map((j) => j.name), ['Login']);
+});
+
+test('empty intent behaves like no intent (backward compatible)', () => {
+  const before = proposeWithHeuristics({ page: PAGE, focus: [] });
+  const after = proposeWithHeuristics({ page: PAGE, focus: [], intent: '' });
+  assert.deepEqual(before, after);
+});
+
+// M7: proposal screenshots live under a stable /screenshots/<siteId>/<tag>/
+// public URL space, kept in sync with the static handler in server/index.mjs.
+test('screenshotUrl produces the URL shape the static handler serves', () => {
+  assert.equal(
+    screenshotUrl('site-1042', 'proposal-3', 'step-02-snap.png'),
+    '/screenshots/site-1042/proposal-3/step-02-snap.png',
+  );
+});
+
+test('screenshotUrl percent-encodes ids so a slash cannot be interpreted as a path separator', () => {
+  // The static handler in server/index.mjs both normalizes the path and
+  // enforces the SCREENSHOT_ROOT boundary, but keeping the URL builder
+  // encoded is a belt-and-braces guarantee: a caller passing "site/foo"
+  // must not yield an unexpected extra "/" that changes what path segment
+  // the id occupies.
+  const clean = screenshotUrl('site-1', 'p-0', 'x.png');
+  const dirty = screenshotUrl('site/foo', 'p-0', 'x.png');
+  const count = (s) => (s.match(/\//g) || []).length;
+  // Both forms must expose exactly the same slash count - three separators
+  // between four path segments plus the leading slash makes four total.
+  assert.equal(count(clean), count(dirty), `slash count changed: clean=${clean}, dirty=${dirty}`);
+  assert.ok(dirty.includes('%2F'), 'expected the slash inside the id to be percent-encoded');
+});
+
+test('screenshotRoot returns an absolute path', () => {
+  const root = screenshotRoot();
+  assert.ok(root.startsWith('/') || /^[A-Za-z]:/.test(root), 'expected absolute path');
 });

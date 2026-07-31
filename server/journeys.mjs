@@ -12,9 +12,7 @@
 // - a site may have a suiteId, a journey, or both, and a journey run never
 // touches suite data.
 
-import { existsSync } from 'node:fs';
 import { getState, update, nextId } from './store.mjs';
-import { buildIndex, mapCause } from './mapper.mjs';
 import { groupIssues, mergeCauses, diffCauses, evaluateIssuesToRaw, scoreCauses, openCauses } from './aqa-sync.mjs';
 import { filterNeedFixIssues } from './issue-filter.mjs';
 
@@ -149,20 +147,6 @@ async function runJourney(journeyId) {
     source: 'journey',
     journeyId: journey.id,
   });
-
-  // Same source mapping the suite path gets (M3), so journey causes are
-  // dispatchable rather than export-only.
-  const site = getState().sites.find((x) => x.id === journey.siteId);
-  if (site?.repoPath && existsSync(site.repoPath)) {
-    try {
-      const index = buildIndex(site.repoPath);
-      for (const cause of nextCauses) {
-        if (!cause.mappedFile) cause.mappedFile = mapCause(cause, index);
-      }
-    } catch (err) {
-      console.error(`journeys: mapping failed for ${journey.id}:`, err.message);
-    }
-  }
 
   update((s) => {
     const j = findJourney(journeyId, s);

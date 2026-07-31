@@ -12,8 +12,10 @@
 import { createServer } from 'node:http';
 import { runJourney, dryRunJourney, inspectPage } from './journey-run.mjs';
 import * as aqa from '../integrations/aqa.mjs';
+import { listenAvailable } from '../server/listen-port.mjs';
 
-const PORT = Number(process.env.RUNNER_PORT) || 4174;
+const PREFERRED_PORT = Number(process.env.RUNNER_PORT) || 4174;
+const PORT_STRICT = process.env.RUNNER_PORT_STRICT === '1' || process.env.RUNNER_PORT_STRICT === 'true';
 // Loopback by default: this endpoint drives a real browser at any URL it is
 // given, which is not something to expose on a shared interface without intent.
 const HOST = process.env.RUNNER_HOST || '127.0.0.1';
@@ -44,7 +46,8 @@ const server = createServer(async (req, res) => {
       // In demo mode the journey still walks and captures its snapshot points;
       // it just is not scored (see journey-run snapshot()). Only a scored run
       // needs AQA credentials, so refusing here would block verifying the walk.
-      const result = await enqueue(() => runJourney(journey));
+      const opts = { screenshotDir: body.screenshotDir || null, screenshotTag: body.screenshotTag || null };
+      const result = await enqueue(() => runJourney(journey, opts));
       console.log(`run ${journey.id || journey.name}: ${result.ok ? 'ok' : 'failed'}${result.scored ? '' : ' (unscored)'} in ${result.ms} ms, ${result.snapshots.length} snapshot(s)`);
       return json(res, 200, result);
     }
@@ -64,7 +67,8 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const journey = body?.journey;
       if (!journey?.steps?.length) return json(res, 400, { error: 'body must be {journey} with a non-empty steps array' });
-      const result = await enqueue(() => dryRunJourney(journey));
+      const opts = { screenshotDir: body.screenshotDir || null, screenshotTag: body.screenshotTag || null };
+      const result = await enqueue(() => dryRunJourney(journey, opts));
       console.log(`dryrun ${journey.name || journey.id}: ${result.ok ? 'ok' : 'failed'} in ${result.ms} ms`);
       return json(res, 200, result);
     }
@@ -95,8 +99,17 @@ function readBody(req) {
   });
 }
 
-server.listen(PORT, HOST, () => {
-  console.log('A11y Agent journey runner');
-  console.log(`  http://${HOST}:${PORT}`);
-  console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode - /run will refuse'}`);
-});
+listenAvailable(server, { host: HOST, preferredPort: PREFERRED_PORT, strict: PORT_STRICT })
+  .then((port) => {
+    if (port !== PREFERRED_PORT) {
+      console.log(`  Port ${PREFERRED_PORT} in use — listening on ${port} instead`);
+      console.log(`  Set RUNNER_URL=http://${HOST}:${port} in the control plane .env`);
+    }
+    console.log('A11y Agent journey runner');
+    console.log(`  http://${HOST}:${port}`);
+    console.log(`  AQA:    ${aqa.isReal ? 'REAL (' + process.env.AQA_TEAMSLUG + ')' : 'demo mode - /run will refuse'}`);
+  })
+  .catch((err) => {
+    console.error('Runner failed to bind:', err.message);
+    process.exit(1);
+  });

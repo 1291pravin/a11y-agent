@@ -2,6 +2,10 @@ node_modules/
 data/state.json
 data/state.json.migrated
 data/state.db*
+data/cursor-cli/
+data/verifier/
+data/screenshots/
+data/analysis/
 .env
 .env.*
 !.env.example
@@ -10,3 +14,7 @@ test-results/
 playwright-report/
 demo/*.webm
 data/demo-record.db*
+.DS_Store
+.playwright-cli/
+.lavish/*
+!.lavish/autopilot-plan.html

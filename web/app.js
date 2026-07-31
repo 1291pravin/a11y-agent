@@ -11,6 +11,9 @@ let batchResult = null;  // last CSV batch response, rendered on the onboard scr
 let draft = null;        // in-progress journey in the editor (survives the poll)
 let runnerH = null;      // last GET /api/runner/health payload
 let runnerHAt = 0;       // when we last fetched runner health (throttle)
+let siteReport = null;   // cached site report (M8) - keyed by siteId
+let siteReportAt = 0;    // when siteReport was fetched
+let fixRunLive = null;   // currently-viewed fix-run detail (M9)
 
 // Mirror of server/journey-model.mjs STEP_TYPES; the SPA has no build step so it
 // cannot import, and the two lists must stay in sync.
@@ -261,7 +264,13 @@ function fmtDuration(ms) {
 function route() {
   const hash = location.hash || '#/dashboard';
   const parts = hash.slice(2).split('/');
-  return { view: parts[0] || 'dashboard', id: parts[1] || null, sub: parts[2] || null };
+  return {
+    view: parts[0] || 'dashboard',
+    id: parts[1] || null,
+    sub: parts[2] || null,
+    // Fourth segment: /site/:id/fix-runs/:runId etc.
+    id2: parts[3] || null,
+  };
 }
 
 function render(force) {
@@ -410,6 +419,8 @@ function viewSite(r) {
   const site = S.sites.find((x) => x.id === r.id);
   if (!site) return `<div class="empty">Site not found.</div>`;
   if (r.sub === 'proposed') return viewProposed(site);
+  if (r.sub === 'report') return viewSiteReport(site);
+  if (r.sub === 'fix-runs') return viewFixRun(site, r);
   const causes = S.causes.filter((c) => c.siteId === site.id);
   const urlFlows = site.flows.filter((f) => f.type === 'URL').length;
   const clickFlows = site.flows.filter((f) => f.type === 'Click-state').length;
@@ -453,13 +464,13 @@ function viewSite(r) {
 
     <h2>Violations by root cause (${causes.reduce((n, c) => n + c.instances, 0)} instances, ${causes.length} causes)</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>Mapped to</th><th>Action</th></tr></thead>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>AQA locator</th><th>Action</th></tr></thead>
       <tbody>${causes.length ? causes.map((c) => `
         <tr>
           <td>${esc(c.title)}</td>
           <td><span class="chip ${c.severity === 'critical' ? 'crit' : 'warn'}">${esc(c.rule)}</span></td>
           <td class="tnum">${c.instances} &middot; ${esc(c.pages[0] === 'all pages' ? 'all pages' : c.pages.length + ' pages')}</td>
-          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped - vendor/CMS</span>'}</td>
+          <td class="mono">${causeLocatorCell(c)}</td>
           <td>${causeAction(c)}</td>
         </tr>`).join('') : `<tr><td colspan="5" class="empty">No open violations.</td></tr>`}
       </tbody>
@@ -496,6 +507,7 @@ function viewProposed(site) {
   const d = site.discover || {};
   const proposals = d.proposals || [];
   const running = d.state === 'running';
+  const hasIntent = Boolean(site.intent || d.intent);
 
   return `
     <div class="crumb"><a href="#/sites">Sites</a> / <a href="#/site/${site.id}">${esc(hostOf(site.url))}</a> / Proposed journeys</div>
@@ -503,34 +515,251 @@ function viewProposed(site) {
       <h1>Proposed journeys${proposals.length ? ` <span class="chip acc">${proposals.length} suggested</span>` : ''}</h1>
       <span>
         <a class="btn ghost small" href="#/journey/new" style="margin-right:6px">+ Add manually</a>
-        <button class="btn" data-act="acceptproposals" data-id="${site.id}"${running || !proposals.length ? ' disabled' : ''}>Accept selected</button>
+        <button class="btn" data-act="acceptproposals" data-id="${site.id}"${running || !proposals.length ? ' disabled' : ''}>Approve &amp; scan</button>
       </span>
     </div>
     ${discoverProgress(site)}
     ${d.error ? `<div class="err" style="margin:-4px 0 12px">Discovery failed: ${esc(d.error)}</div>` : ''}
+    ${hasIntent ? `<div class="intent-echo"><div class="intent-echo-l">Read from your intent</div><div class="intent-echo-b">${esc(site.intent || d.intent || '')}</div></div>` : ''}
     ${!running && !proposals.length ? `
       <div class="empty">No proposals yet.
         <button class="btn small" data-act="discover" data-id="${site.id}" style="margin-left:8px">Discover journeys</button>
       </div>`
     : `
-      <div class="hint" style="margin:-4px 0 12px">An agent inspected ${esc(hostOf(site.url))} and suggested these. Untick anything you do not want, then accept. You can edit steps afterwards.</div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th style="width:44px">Use</th><th>Journey</th><th>Focus</th><th>Proposed steps</th><th>Checked</th></tr></thead>
-        <tbody>${proposals.map((p, i) => {
-          const dr = p.dryRun;
-          const check = !dr ? '<span class="chip idle">pending</span>'
-            : dr.ok ? '<span class="chip good">selectors ok</span>'
-            : `<span class="chip crit" title="${esc(dr.error || '')}">selector failed</span>`;
-          return `
-            <tr>
-              <td><input type="checkbox" class="prop-pick" data-idx="${i}"${dr?.ok !== false ? ' checked' : ''} aria-label="Use ${esc(p.name)}"></td>
-              <td>${esc(p.name)}${p.source === 'auto' || p.source ? `<span class="autob">${esc(p.source)}</span>` : ''}</td>
-              <td>${esc(p.focus || '-')}</td>
-              <td class="stepprev">${esc(stepPreview(p.steps))}</td>
-              <td>${check}</td>
-            </tr>`;
-        }).join('')}</tbody>
-      </table></div>`}`;
+      <div class="hint" style="margin:-4px 0 12px">An agent inspected ${esc(hostOf(site.url))} and suggested these. Untick anything you do not want, then approve. Approval kicks off a scan on every included journey.</div>
+      <div class="proposal-grid">
+        ${proposals.map((p, i) => proposalCard(p, i)).join('')}
+      </div>`}`;
+}
+
+// One journey proposal as a card: header + screenshot strip + step preview +
+// include-in-batch checkbox. The screenshots come from the runner's dry-run
+// (M7) and let a reviewer skim what the journey actually visits rather than
+// squinting at selectors.
+function proposalCard(p, i) {
+  const dr = p.dryRun;
+  const failed = dr?.ok === false;
+  const pending = !dr;
+  const status = pending ? '<span class="chip idle">pending</span>'
+    : failed ? `<span class="chip crit" title="${esc(dr.error || '')}">selector failed</span>`
+    : '<span class="chip good">passed dry-run</span>';
+  const shots = (dr?.steps || []).slice(0, 8);
+  const stepLabels = (p.steps || []).map((s, idx) => stepLabel(s, idx));
+  return `
+    <div class="proposal-card${failed ? ' failed' : ''}">
+      <div class="prophead">
+        <div>
+          <div class="propname">${esc(p.name)}${p.source ? ` <span class="autob">${esc(p.source)}</span>` : ''}</div>
+          <div class="propmeta">${(p.steps || []).length} step(s) · ${dr ? `${dr.steps?.filter((s) => s.status === 'ok').length || 0}/${dr.steps?.length || 0} passed` : 'dry-run pending'}${p.focus ? ` · ${esc(p.focus)}` : ''}</div>
+        </div>
+        <div>${status}</div>
+      </div>
+      ${shots.length ? `<div class="shotstrip">${shots.map((s, idx) => shotThumb(s, idx, stepLabels[idx])).join('')}</div>` : ''}
+      <div class="stepprev-line">${esc(stepPreview(p.steps))}</div>
+      <div class="propfoot">
+        <label class="proplbl"><input type="checkbox" class="prop-pick" data-idx="${i}"${dr?.ok !== false ? ' checked' : ''} aria-label="Include ${esc(p.name)}"> Include</label>
+        <span class="propfoot-r">
+          <a class="btn ghost small" href="#/journey/new" title="Add manually">Edit</a>
+        </span>
+      </div>
+    </div>`;
+}
+
+function shotThumb(step, idx, label) {
+  if (!step.screenshot) {
+    // Failed / skipped steps have no thumbnail; render a placeholder that
+    // matches the shape so the strip stays aligned across cards.
+    const cls = step.status === 'skipped' ? 'shotph skipped' : 'shotph';
+    return `<div class="${cls}" aria-label="Step ${idx + 1}: ${esc(step.type)} (${esc(step.status || 'n/a')})"><span class="steplbl">${idx + 1}. ${esc(step.type)}</span></div>`;
+  }
+  return `
+    <div class="shotthumb" title="${esc(label || step.type)}">
+      <img src="${esc(step.screenshot)}" alt="Step ${idx + 1}: ${esc(label || step.type)}" loading="lazy">
+      <span class="steplbl">${idx + 1}. ${esc(label || step.type)}</span>
+    </div>`;
+}
+
+function stepLabel(step, idx) {
+  if (step.type === 'goto') return `goto ${shortUrl(step.url)}`;
+  if (step.type === 'snapshot') return step.label || 'snapshot';
+  if (step.selector) return `${step.type} ${step.selector.slice(0, 24)}`;
+  return step.type;
+}
+
+// M8: site-level accessibility report. Aggregates causes across every journey
+// on the site (and the AQA suite when present) into one screen: a headline
+// score, a severity breakdown, the flat cause list, and the "Fix All" CTA
+// that opens a batch dispatch (M9). The report itself is a snapshot of the
+// current state - kicked off from /api/sites/:id/report but computable from
+// public state too. We fetch once per route entry and let the 3s poll refresh
+// the underlying causes so numbers stay live without extra round trips.
+function viewSiteReport(site) {
+  // First entry to the route: fire the fetch. Result renders on the next tick.
+  if (!siteReport || siteReport.site?.id !== site.id || Date.now() - siteReportAt > 15000) {
+    fetchSiteReport(site.id);
+  }
+  const rep = (siteReport && siteReport.site?.id === site.id) ? siteReport : null;
+  const journeys = (S.journeys || []).filter((j) => j.siteId === site.id);
+  const anyRunning = journeys.some((j) => j.runState === 'running');
+  const activeRun = (S.fixRuns || []).find((f) => f.siteId === site.id && (f.state === 'queued' || f.state === 'running'));
+
+  return `
+    <div class="crumb"><a href="#/sites">Sites</a> / <a href="#/site/${site.id}">${esc(hostOf(site.url))}</a> / Report</div>
+    <div class="topline">
+      <h1>Accessibility report <span class="chip acc">${esc(hostOf(site.url))}</span>${anyRunning ? '<span class="chip run">scans in flight</span>' : ''}</h1>
+      <span>
+        <a class="btn ghost small" href="#/site/${site.id}" style="margin-right:6px">Back to site</a>
+        <button class="btn" data-act="fixall" data-id="${site.id}"${!rep || !rep.stats.dispatchable || activeRun ? ' disabled' : ''}>${activeRun ? 'Fix run in flight' : `Fix All${rep ? ` (${rep.stats.dispatchable})` : ''}`}</button>
+      </span>
+    </div>
+    ${rep ? siteReportBody(rep, activeRun) : `<div class="progress" role="status" aria-live="polite"><div class="pl"></div><div class="pr">Building your report…</div></div>`}`;
+}
+
+function siteReportBody(rep, activeRun) {
+  const sev = rep.stats.severity;
+  const jsummary = rep.journeys.map(reportJourneyRow).join('');
+  const causeRows = rep.causes.length ? rep.causes.map(reportCauseRow).join('') : '';
+
+  return `
+    ${activeRun ? `<div class="hint" style="margin:-4px 0 12px">Fix run <a href="#/site/${rep.site.id}/fix-runs/${activeRun.id}">${esc(activeRun.id)}</a> is in flight (${activeRun.dispatched || 0}/${activeRun.plannedCount || 0} dispatched).</div>` : ''}
+    <div class="scorehero">
+      <div class="ring" style="background:conic-gradient(var(${scoreVar(rep.site.score?.score)}) ${rep.site.score?.score || 0}%, var(--line) 0)">
+        <div class="ring-in"><div class="ring-sc">${rep.site.score?.score ?? '—'}</div><div class="ring-g">${esc(rep.site.score?.grade || '')}</div></div>
+      </div>
+      <div class="sx">
+        <h3>${rep.stats.openCauses} open cause(s) across ${rep.stats.journeys} journey(s)</h3>
+        <div class="m">
+          ${sev.critical || 0} critical · ${sev.serious || 0} serious · ${sev.moderate || 0} moderate · ${sev.minor || 0} minor.
+          ${rep.stats.dispatchable} eligible for auto-fix.
+        </div>
+      </div>
+    </div>
+
+    <h2 style="margin:22px 0 10px;font-size:16px">Journeys scanned</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Journey</th><th>Snapshots</th><th>Score</th><th>Causes</th><th>Last run</th></tr></thead>
+      <tbody>${jsummary || '<tr><td colspan="5" class="empty">No journeys yet.</td></tr>'}</tbody>
+    </table></div>
+
+    <h2 style="margin:22px 0 10px;font-size:16px">Root causes ${rep.stats.dispatchable ? `<span class="chip acc" style="margin-left:6px">${rep.stats.dispatchable} eligible</span>` : ''}</h2>
+    ${causeRows ? `<div class="tbl-wrap"><table>
+      <thead><tr><th>Title</th><th>Rule</th><th>Severity</th><th>Instances</th><th>Status</th></tr></thead>
+      <tbody>${causeRows}</tbody>
+    </table></div>`
+    : '<div class="empty">No open causes yet. Approve journeys to run a scan.</div>'}`;
+}
+
+function reportJourneyRow(j) {
+  const state = j.runState === 'running' ? '<span class="chip run">running</span>'
+    : j.lastRun?.ok === false ? '<span class="chip crit">failed</span>'
+    : j.lastRun?.unscored ? '<span class="chip idle">walked (unscored)</span>'
+    : j.lastRun?.score ? scoreChip(j.lastRun.score)
+    : '<span class="chip idle">not run</span>';
+  const causes = j.lastRun?.causes ?? '-';
+  const at = j.lastRun?.at ? fmtAgo(j.lastRun.at) : (j.runState === 'running' ? 'now' : 'never');
+  return `<tr>
+    <td><a href="#/journey/${j.id}">${esc(j.name)}</a></td>
+    <td class="tnum">${j.lastRun?.snapshots ?? '-'}</td>
+    <td>${state}</td>
+    <td class="tnum">${causes}</td>
+    <td>${esc(at)}</td>
+  </tr>`;
+}
+
+function reportCauseRow(c) {
+  const sevClass = c.severity === 'critical' ? 'crit' : c.severity === 'serious' ? 'warn' : c.severity === 'moderate' ? 'acc' : 'idle';
+  const status = c.hasOpenPr ? '<span class="chip run">PR open</span>'
+    : c.hasOpenTask ? '<span class="chip run">task queued</span>'
+    : '<span class="chip idle">eligible</span>';
+  return `<tr>
+    <td>${esc(c.title)}</td>
+    <td><code style="font-size:11px">${esc(c.ruleId || '')}</code></td>
+    <td><span class="chip ${sevClass}">${esc(c.severity)}</span></td>
+    <td class="tnum">${c.instances}</td>
+    <td>${status}</td>
+  </tr>`;
+}
+
+function scoreVar(n) {
+  if (n == null) return '--ink-faint';
+  if (n >= 90) return '--good';
+  if (n >= 70) return '--accent';
+  if (n >= 50) return '--warn';
+  return '--crit';
+}
+
+// Off-cycle fetch (not on the 3s poll): the report shape is heavier than the
+// state blob and only needed when the operator is on the report screen.
+async function fetchSiteReport(siteId) {
+  try {
+    const r = await api('GET', `/api/sites/${siteId}/report`);
+    siteReport = r;
+    siteReportAt = Date.now();
+    render(true);
+  } catch (err) {
+    console.error('report fetch failed:', err.message);
+  }
+}
+
+// M9: batch dispatch command center. The Fix All button on the report opens
+// this screen; parallel agent lanes show queued/working/verifying tasks, a
+// budget bar, a cost ticker, and a kill switch. State comes off the public
+// state poll (fix runs live under S.fixRuns).
+function viewFixRun(site, r) {
+  const runId = r.id2;
+  const run = (S.fixRuns || []).find((x) => x.id === runId);
+  if (!run) return `<div class="crumb"><a href="#/site/${site.id}/report">Report</a> / Fix run</div>
+    <div class="empty">Fix run <code>${esc(runId || '(unknown)')}</code> not found.</div>`;
+
+  const tasks = S.tasks.filter((t) => (run.taskIds || []).includes(t.id));
+  const lanes = {
+    queued: tasks.filter((t) => t.state === 'queued'),
+    working: tasks.filter((t) => t.state === 'working'),
+    verifying: tasks.filter((t) => t.state === 'verifying' || t.state === 'awaiting_merge'),
+    done: tasks.filter((t) => t.state === 'done' || t.state === 'verified' || t.state === 'merged'),
+    failed: tasks.filter((t) => t.state === 'failed'),
+  };
+  const budgetPct = run.budgetUsd ? Math.min(100, Math.round(((run.spentUsd || 0) / run.budgetUsd) * 100)) : 0;
+  const active = run.state === 'queued' || run.state === 'running';
+
+  return `
+    <div class="crumb"><a href="#/site/${site.id}/report">Report</a> / Fix run</div>
+    <div class="topline">
+      <h1>Fix run <code style="font-size:14px;font-weight:600">${esc(run.id)}</code>
+        ${run.state === 'running' ? '<span class="chip run">running</span>'
+          : run.state === 'queued' ? '<span class="chip idle">queued</span>'
+          : run.state === 'complete' ? '<span class="chip good">complete</span>'
+          : run.state === 'cancelled' ? '<span class="chip warn">cancelled</span>'
+          : `<span class="chip crit">${esc(run.state)}</span>`}
+      </h1>
+      <span>
+        <a class="btn ghost small" href="#/site/${site.id}/report" style="margin-right:6px">Report</a>
+        ${active ? `<button class="btn ghost" data-act="cancelfixrun" data-id="${run.id}">Cancel run</button>` : ''}
+      </span>
+    </div>
+    <div class="cards">
+      ${kpi(run.plannedCount || 0, 'Planned')}
+      ${kpi(run.dispatched || 0, 'Dispatched')}
+      ${kpi(lanes.done.length, 'Fixed')}
+      ${kpi(lanes.failed.length, 'Failed')}
+    </div>
+
+    ${run.budgetUsd ? `<div class="hint" style="margin:-4px 0 12px">
+      Budget: <b>$${run.spentUsd?.toFixed(2) || '0.00'}</b> / $${run.budgetUsd.toFixed(2)}
+      · Concurrency: ${run.concurrency || 1}
+      · Started: ${esc(fmtAgo(run.startedAt))}
+      <div style="height:6px;background:var(--surface-2);border-radius:99px;overflow:hidden;margin-top:6px;max-width:420px">
+        <div style="height:100%;width:${budgetPct}%;background:var(--accent);transition:width 200ms"></div>
+      </div>
+    </div>` : ''}
+
+    <div class="kanban-wrap"><div class="kanban" style="grid-template-columns:repeat(5,minmax(180px,1fr))">
+      ${['queued', 'working', 'verifying', 'done', 'failed'].map((k) => `
+        <div class="kcol">
+          <h5>${k}<span>${lanes[k].length}</span></h5>
+          ${lanes[k].map((t) => `<div class="kcard"><b>${esc(t.title || t.id)}</b><span class="m">${esc(t.ruleId || t.state)}</span>${t.prNum ? `<span class="cursor-tag">PR #${esc(String(t.prNum))}</span>` : ''}</div>`).join('')}
+        </div>`).join('')}
+    </div></div>`;
 }
 
 // One-line human summary of a step list, so the review table shows what a
@@ -616,15 +845,16 @@ function viewOnboardQuick() {
   return `
     <div class="crumb"><a href="#/onboard">Onboard</a> / Quick scan</div>
     <div class="topline"><h1>Quick scan <span class="chip good">no suite needed</span></h1></div>
-    <form class="form" id="quick-form" style="max-width:660px">
+    <form class="form" id="quick-form" style="max-width:720px">
       <div class="jrow2">
         <div class="field"><label for="q-url">Website URL</label>
           <input id="q-url" name="url" placeholder="https://fr.florga.com" autocomplete="off"></div>
         <div class="field"><label for="q-ruleset">Ruleset</label>
           <select id="q-ruleset" name="rulesetId">
-            <option value="WCAG21AA">WCAG 2.1 AA</option>
-            <option value="WCAG22AA">WCAG 2.2 AA</option>
-            <option value="WCAG21A">WCAG 2.1 A</option>
+            <option value="wcag21_needfix_1">WCAG 2.1 AA (auto only)</option>
+            <option value="wcag21">WCAG 2.1 AA (full)</option>
+            <option value="wcag22_needfix_1">WCAG 2.2 AA (auto only)</option>
+            <option value="wcag22">WCAG 2.2 AA (full)</option>
           </select></div>
       </div>
       <div class="field"><label for="q-repopath">Local repo folder <span class="lblx">optional - lets the agent read your code for better selectors, and maps issues to files</span></label>
@@ -632,16 +862,36 @@ function viewOnboardQuick() {
         <div class="hint">Absolute path to the repo on this machine.</div></div>
       <div class="field"><label for="q-repo">GitHub repo <span class="lblx">optional - owner/name, only used to open fix PRs</span></label>
         <input id="q-repo" name="repo" placeholder="florga/storefront" autocomplete="off"></div>
-      <label class="flabel">Focus areas <span class="lblx">guide the agent (optional)</span></label>
-      <div class="fchips" id="q-focus">
-        ${['Home', 'Mega-menu', 'Add to cart', 'Search', 'Login', 'Checkout'].map((f, i) => `
-          <label class="fc"><input type="checkbox" value="${esc(f)}"${i < 3 ? ' checked' : ''}> ${esc(f)}</label>`).join('')}
+
+      <div class="field">
+        <label for="q-intent">Tell us about the site <span class="lblx">optional but recommended — what it does, who uses it, biggest a11y worries</span></label>
+        <textarea id="q-intent" name="intent" rows="4" placeholder="Example: Cosmetics e-commerce in FR/EN. Biggest worry is the 3-step checkout and the cookie banner. Users are mostly 45+ so contrast and font sizing matter. Cover: home, PDP, add-to-cart, checkout, account login. Skip the blog." style="width:100%;min-height:110px;resize:vertical;font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);line-height:1.5"></textarea>
+        <div class="hint">The agent reads this alongside your site &amp; repo. Free-form is fine — the more context, the fewer wrong journeys we propose.</div>
       </div>
-      <div class="hint">We visit the URL, read the page, and propose journeys for these areas. You review before anything runs.</div>
+
+      <details style="margin:2px 0 6px">
+        <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--accent)">Dev server for local verification (optional, unlocks Local Verifier)</summary>
+        <div style="border-left:2px solid var(--line);margin-top:10px;padding:4px 0 4px 14px">
+          <div class="jrow2">
+            <div class="field"><label for="q-ds-install">Install command</label>
+              <input id="q-ds-install" name="devServer.installCmd" placeholder="pnpm install --frozen-lockfile" autocomplete="off" spellcheck="false"></div>
+            <div class="field"><label for="q-ds-start">Start command</label>
+              <input id="q-ds-start" name="devServer.startCmd" placeholder="pnpm dev" autocomplete="off" spellcheck="false"></div>
+          </div>
+          <div class="jrow2">
+            <div class="field"><label for="q-ds-url">Preview URL</label>
+              <input id="q-ds-url" name="devServer.previewUrl" placeholder="http://localhost:3000" autocomplete="off" spellcheck="false"></div>
+            <div class="field"><label for="q-ds-health">Health path <span class="lblx">optional</span></label>
+              <input id="q-ds-health" name="devServer.healthPath" placeholder="/" autocomplete="off" spellcheck="false"></div>
+          </div>
+          <div class="hint">When set, the Local Verifier (roadmap M10) will spin the dev server on each PR branch and re-run the affected journey against it before we flag the PR as ready to merge.</div>
+        </div>
+      </details>
+
       <div class="err" id="quick-err" role="alert"></div>
       <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px">
         <a class="btn ghost" href="#/onboard">Back</a>
-        <button class="btn" type="submit">Scan &amp; discover journeys</button>
+        <button class="btn" type="submit">Analyze &amp; propose journeys</button>
       </div>
     </form>`;
 }
@@ -786,7 +1036,7 @@ function viewSettings() {
           <td>Set <span class="mono">AQA_TEAMSLUG</span> + <span class="mono">AQA_API_KEY</span> env vars and restart for real mode.</td></tr>
         <tr><td>Cursor Background Agents</td>
           <td>${modeChip(S.mode.cursor)}</td>
-          <td>Set <span class="mono">CURSOR_API_KEY</span> env var and restart for real mode.</td></tr>
+          <td>Set <span class="mono">CURSOR_API_KEY</span> for cloud agents. <span class="mono">CURSOR_MODE=auto|cloud|cli</span> controls local CLI fallback (needs <span class="mono">agent</span> + site <span class="mono">repoPath</span>). Mode: <span class="mono">${esc(S.mode.cursorMode || 'auto')}</span>${S.mode.cursorCli ? ' · CLI ready' : ''}.</td></tr>
         <tr><td>Journey runner (Playwright)</td>
           <td>${runnerChip()}</td>
           <td>Separate process on <span class="mono">RUNNER_URL</span>; start with <span class="mono">npm run runner</span>. ${runnerH && !runnerH.ok ? esc(runnerH.error || 'unreachable') : runnerH?.runner ? 'Browser ' + esc(runnerH.runner.browser || 'chromium') + ', AQA ' + esc(runnerH.runner.aqa || '?') : 'Checking&hellip;'}</td></tr>
@@ -955,7 +1205,7 @@ function viewJourneyReport(r) {
 
     <h2>What is failing &amp; where</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Root cause</th><th>Rule</th><th>Severity</th><th>Where</th><th>Instances</th><th>Source</th></tr></thead>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Severity</th><th>Where</th><th>Instances</th><th>AQA locator</th></tr></thead>
       <tbody>${causes.length ? causes.map((c) => `
         <tr>
           <td>${esc(c.title)}</td>
@@ -963,7 +1213,7 @@ function viewJourneyReport(r) {
           <td><span class="chip ${c.severity === 'critical' ? 'crit' : c.severity === 'serious' ? 'warn' : 'idle'}">${esc(c.severity)}</span></td>
           <td>${esc((c.pages || []).join(', ') || '-')}</td>
           <td class="tnum">${c.instances}</td>
-          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped</span>'}</td>
+          <td class="mono">${causeLocatorCell(c)}</td>
         </tr>`).join('') : `<tr><td colspan="6" class="empty">No open fix-required violations on this journey.</td></tr>`}
       </tbody>
     </table></div>
@@ -1048,13 +1298,13 @@ function viewJourneyDetail(r) {
 
     <h2>Violations by root cause (${violations} instances, ${causes.length} causes)</h2>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>Mapped to</th><th>Action</th></tr></thead>
+      <thead><tr><th>Root cause</th><th>Rule</th><th>Instances</th><th>AQA locator</th><th>Action</th></tr></thead>
       <tbody>${causes.length ? causes.map((c) => `
         <tr>
           <td>${esc(c.title)}</td>
           <td><span class="chip ${c.severity === 'critical' ? 'crit' : 'warn'}">${esc(c.rule)}</span></td>
           <td class="tnum">${c.instances} &middot; ${esc(c.pages[0] === 'all pages' ? 'all pages' : c.pages.length + ' pages')}</td>
-          <td class="mono">${c.mappedFile ? esc(c.mappedFile) : '<span style="color:var(--ink-faint)">unmapped - vendor/CMS</span>'}</td>
+          <td class="mono">${causeLocatorCell(c)}</td>
           <td>${causeAction(c)}</td>
         </tr>`).join('') : `<tr><td colspan="5" class="empty">No open violations.</td></tr>`}
       </tbody>
@@ -1104,7 +1354,7 @@ function ensureDraft(r) {
     draft = {
       for: 'new', id: null,
       siteId: S.sites[0]?.id || '',
-      name: '', rulesetId: '', startUrl: '', vw: 1440, vh: 900,
+      name: '', rulesetId: 'wcag21_needfix_1', startUrl: '', vw: 1440, vh: 900,
       steps: [{ type: 'snapshot', label: '' }],
     };
     return;
@@ -1130,12 +1380,13 @@ function viewJourneyEditor(r) {
       <div class="topline"><h1>${draft.id ? 'Edit journey' : 'New journey'}</h1></div>
       <div class="form" style="max-width:680px">
         <div class="jrow2">
-          <div class="field"><label>Name</label><input data-jfield="name" value="${esc(draft.name)}" placeholder="Checkout flow"></div>
+          <div class="field"><label for="journey-name">Name</label><input id="journey-name" data-jfield="name" value="${esc(draft.name)}" placeholder="Checkout flow"></div>
           <div class="field"><label>Site</label><select data-jfield="siteId">${S.sites.map((s) => `<option value="${s.id}"${s.id === draft.siteId ? ' selected' : ''}>${esc(hostOf(s.url))}</option>`).join('')}</select></div>
         </div>
         <div class="jrow2">
-          <div class="field"><label>Ruleset ID</label><input data-jfield="rulesetId" value="${esc(draft.rulesetId)}" placeholder="WCAG21AA"></div>
-          <div class="field"><label>Start URL</label><input data-jfield="startUrl" value="${esc(draft.startUrl)}" placeholder="https://example.com/cart"></div>
+          <div class="field"><label for="journey-ruleset">Ruleset ID</label><input id="journey-ruleset" data-jfield="rulesetId" value="${esc(draft.rulesetId)}" placeholder="wcag21_needfix_1" aria-describedby="journey-ruleset-hint"></div>
+          <div class="hint" id="journey-ruleset-hint">Pack id v2 is sent automatically (AQA_RULESET_PACK_ID).</div>
+          <div class="field"><label for="journey-start-url">Start URL</label><input id="journey-start-url" data-jfield="startUrl" value="${esc(draft.startUrl)}" placeholder="https://example.com/cart"></div>
         </div>
         <h2>Steps <span class="hint" style="display:inline">(at least one snapshot required)</span></h2>
         ${draft.steps.map(stepEditorRow).join('')}
@@ -1355,9 +1606,9 @@ function flowChip(f) {
 }
 
 function modeChip(mode) {
-  return mode === 'real'
-    ? `<span class="chip good">connected</span>`
-    : `<span class="chip warn">demo</span>`;
+  if (mode === 'real') return `<span class="chip good">connected</span>`;
+  if (mode === 'cli-ready') return `<span class="chip good">cli ready</span>`;
+  return `<span class="chip warn">demo</span>`;
 }
 
 function runnerChip() {
@@ -1369,17 +1620,32 @@ function runnerChip() {
     : `<span class="chip warn">demo</span>`;
 }
 
+function causeLocatorCell(c) {
+  const loc = formatCauseLocator(c);
+  return loc
+    ? esc(loc)
+    : '<span style="color:var(--ink-faint)" title="AQA did not provide a selector for this group">—</span>';
+}
+
+// Mirror of server/aqa-sync.mjs formatCauseLocator (SPA has no imports).
+function formatCauseLocator(c) {
+  const sel = c?.selector && c.selector !== 'unknown' ? c.selector : '';
+  const tag = c?.tagName ? String(c.tagName).toLowerCase() : '';
+  if (tag && sel) return `${tag} · ${sel}`;
+  if (sel) return sel;
+  if (tag) return tag;
+  return '';
+}
+
 function causeAction(c) {
   const site = S.sites.find((x) => x.id === c.siteId);
   // A fix task needs a repo to land in. Offering the button on an audit-only
   // (quick-scan) site would just produce a 400, so offer the report instead and
   // say why.
-  if (c.status === 'open' && c.mappedFile && site?.repo)
+  if (c.status === 'open' && site?.repo)
     return `<button class="btn small" data-act="dispatch" data-id="${c.id}">Dispatch fix task</button>`;
-  if (c.status === 'open' && c.mappedFile && !site?.repo)
-    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Add a GitHub repo to this site to enable auto-fix">Export report</button>`;
   if (c.status === 'open')
-    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Downloads fix-report.md covering all unmapped open causes for this site">Export report</button>`;
+    return `<button class="btn ghost small" data-act="export" data-id="${c.id}" title="Downloads fix-report.md for this site (no GitHub repo for auto-fix)">Export report</button>`;
   if (c.status === 'task') {
     const t = S.tasks.find((x) => x.causeId === c.id);
     return `<span class="chip run">task ${t ? t.state : 'running'}</span>`;
@@ -1436,17 +1702,22 @@ const ACT_BUSY = {
   merged: 'Recording&hellip;',
   runjourney: 'Starting&hellip;',
   deletejourney: 'Deleting&hellip;',
+  acceptproposals: 'Approving&hellip;',
+  fixall: 'Dispatching batch&hellip;',
+  cancelfixrun: 'Cancelling&hellip;',
 };
 const ACT_FAIL = {
   exportjourney: 'Could not export report',
   discover: 'Could not start discovery',
-  acceptproposals: 'Could not accept journeys',
+  acceptproposals: 'Could not approve journeys',
   dispatch: 'Could not dispatch fix task',
   scan: 'Could not start scan',
   merged: 'Could not record merge',
   export: 'Could not export report',
   runjourney: 'Could not start journey run',
   deletejourney: 'Could not delete journey',
+  fixall: 'Could not start Fix All batch',
+  cancelfixrun: 'Could not cancel fix run',
 };
 
 function bindActions() {
@@ -1499,17 +1770,35 @@ function bindActions() {
           toast('ok', 'Report downloading', `a11y-report-${id}.md`);
         }
         if (act === 'discover') {
-          await api('POST', `/api/sites/${id}/discover`, { focus: [] });
+          const site = (S?.sites || []).find((x) => x.id === id);
+          await api('POST', `/api/sites/${id}/discover`, { intent: site?.intent || '' });
           toast('ok', 'Discovering journeys', 'An agent is inspecting the site. Nothing is saved until you review.');
           location.hash = `#/site/${id}/proposed`;
         }
         if (act === 'acceptproposals') {
           const picks = [...document.querySelectorAll('.prop-pick')]
             .filter((c) => c.checked).map((c) => Number(c.dataset.idx));
-          if (!picks.length) { throw new Error('Select at least one journey to accept.'); }
-          const r = await api('POST', `/api/sites/${id}/journeys/accept`, { accept: picks });
-          toast('ok', `${r.created} journey(s) accepted`, r.skipped?.length ? `${r.skipped.length} skipped (duplicate or invalid).` : 'Run them from the Journeys screen.');
-          location.hash = '#/journeys';
+          if (!picks.length) { throw new Error('Select at least one journey to include.'); }
+          // M8: /approve auto-runs every created journey, so the reviewer
+          // moves straight from approval into a scoring pass and lands on
+          // the site report where scans are already in flight.
+          const r = await api('POST', `/api/sites/${id}/journeys/approve`, { accept: picks });
+          toast('ok', `Scanning ${r.created} journey(s)`, r.skipped?.length
+            ? `${r.skipped.length} skipped (duplicate or invalid). Watch progress on the site report.`
+            : 'Watch progress on the site report; the Fix All button unlocks once scans finish.');
+          location.hash = `#/site/${id}/report`;
+        }
+        if (act === 'fixall') {
+          const run = await api('POST', `/api/sites/${id}/fix-runs`, {});
+          toast('ok', 'Fix run started', `Batch ${run.id}: ${run.plannedCount} cause(s), concurrency ${run.concurrency}, budget $${run.budgetUsd.toFixed(2)}.`);
+          location.hash = `#/site/${id}/fix-runs/${run.id}`;
+        }
+        if (act === 'cancelfixrun') {
+          if (!window.confirm('Cancel this fix run? In-flight tasks will keep running until they complete on their own, but no new ones will be dispatched.')) {
+            el.disabled = false; el.removeAttribute('aria-busy'); el.innerHTML = label; return;
+          }
+          await api('POST', `/api/fix-runs/${id}/cancel`);
+          toast('ok', 'Fix run cancelled', 'No new tasks will be dispatched from this batch.');
         }
         if (act === 'deletejourney') {
           if (!window.confirm('Delete this journey? Open causes it found are removed; any with a task or PR are kept.')) {
@@ -1553,29 +1842,47 @@ function bindActions() {
   });
 
   // Quick scan: create the site on the evaluate path, then immediately kick off
-  // journey discovery and drop the user on the review screen.
+  // journey discovery and drop the user on the review screen. The free-form
+  // intent replaces the old focus checkbox chips - it is what the Journey
+  // Designer LLM primarily reads, with focus chips as secondary hints.
   const quick = document.getElementById('quick-form');
   if (quick) quick.addEventListener('submit', async (e) => {
     e.preventDefault();
     const errBox = document.getElementById('quick-err');
     errBox.textContent = '';
-    const data = Object.fromEntries(new FormData(quick));
-    if (!data.url) { errBox.textContent = 'Enter a website URL.'; return; }
-    const focus = [...document.querySelectorAll('#q-focus input:checked')].map((c) => c.value);
+    const raw = Object.fromEntries(new FormData(quick));
+    if (!raw.url) { errBox.textContent = 'Enter a website URL.'; return; }
+
+    // Peel out the devServer.* fields into a nested object so the API can
+    // receive them as one block (matches the shape makeSite() normalizes).
+    const devServer = {};
+    const data = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (k.startsWith('devServer.')) devServer[k.slice('devServer.'.length)] = v;
+      else data[k] = v;
+    }
+    const hasDevServer = Object.values(devServer).some((v) => String(v || '').trim());
+    const intent = String(data.intent || '').trim();
+
     const btn = quick.querySelector('button[type="submit"]');
     btn.disabled = true;
     btn.setAttribute('aria-busy', 'true');
     btn.innerHTML = '<span class="spin"></span>Starting&hellip;';
     try {
-      const site = await api('POST', '/api/sites', { ...data, mode: 'quick' });
-      await api('POST', `/api/sites/${site.id}/discover`, { focus });
+      const site = await api('POST', '/api/sites', {
+        ...data,
+        mode: 'quick',
+        intent,
+        devServer: hasDevServer ? devServer : null,
+      });
+      await api('POST', `/api/sites/${site.id}/discover`, { intent });
       await refresh();
       location.hash = `#/site/${site.id}/proposed`;
     } catch (err) {
       errBox.textContent = err.message;
       btn.disabled = false;
       btn.removeAttribute('aria-busy');
-      btn.textContent = 'Scan & discover journeys';
+      btn.textContent = 'Analyze & propose journeys';
     }
   });
 

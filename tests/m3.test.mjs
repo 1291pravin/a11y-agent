@@ -147,7 +147,7 @@ after(() => {
   try { unlinkSync(STATE_FILE); } catch {}
 });
 
-test('fix-report exports unmapped open causes as markdown', async () => {
+test('fix-report exports open causes as markdown', async () => {
   const res = await fetch(`${BASE}/api/sites/site-demo/fix-report`);
   assert.equal(res.status, 200);
   assert.match(res.headers.get('content-type'), /^text\/markdown/);
@@ -156,33 +156,11 @@ test('fix-report exports unmapped open causes as markdown', async () => {
   assert.match(body, /Demo vendor iframe missing title/);
   assert.match(body, /frame-title/);
   assert.match(body, /Suggested action: Add a title attribute/);
-  assert.ok(!body.includes('Demo images missing alt text'), 'mapped causes stay out of the report');
+  assert.match(body, /Demo images missing alt text/);
+  assert.match(body, /AQA locator/);
 });
 
 test('fix-report 404s for an unknown site', async () => {
   const res = await fetch(`${BASE}/api/sites/nope/fix-report`);
   assert.equal(res.status, 404);
-});
-
-test('remap requires a repoPath on the site', async () => {
-  const res = await fetch(`${BASE}/api/sites/site-demo/remap`, { method: 'POST' });
-  assert.equal(res.status, 400);
-  const body = await res.json();
-  assert.match(body.error, /repoPath/);
-});
-
-test('onboarding accepts an optional repoPath and remap reports counts', async () => {
-  const create = await fetch(`${BASE}/api/sites`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ url: 'https://m3.example.com', repo: 'acme/m3', suiteId: 'TS3', repoPath: repo }),
-  });
-  assert.equal(create.status, 201);
-  const site = await create.json();
-  assert.equal(site.repoPath, repo);
-
-  const res = await fetch(`${BASE}/api/sites/${site.id}/remap`, { method: 'POST' });
-  assert.equal(res.status, 200);
-  const counts = await res.json();
-  assert.deepEqual(counts, { mapped: 0, unmapped: 0 });
 });

@@ -16,17 +16,39 @@
 // real browser, so a selector the model invented is caught before it is saved
 // rather than on the first scored run.
 
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getState, update } from './store.mjs';
 import { buildIndex } from './mapper.mjs';
 import { validateJourney } from './journey-model.mjs';
-import { callRunner, allJourneys, makeJourney } from './journeys.mjs';
+import { callRunner, allJourneys, makeJourney, startJourneyRun } from './journeys.mjs';
 import { chatJson, llmConfigured } from '../integrations/llm.mjs';
+
+// Repo-relative screenshots root the runner writes into. The runner and the
+// server share a filesystem on every supported deployment (both are Node
+// processes on the same host), so a common absolute path is the simplest
+// wire format between the two.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCREENSHOT_ROOT = process.env.SCREENSHOT_DIR
+  ? resolve(process.env.SCREENSHOT_DIR)
+  : resolve(__dirname, '..', 'data', 'screenshots');
+
+export function screenshotRoot() {
+  return SCREENSHOT_ROOT;
+}
+
+// Public URL prefix for a screenshot file the runner wrote for this site.
+// Kept in sync with the static handler in server/index.mjs; if you change
+// one, change the other.
+export function screenshotUrl(siteId, tag, basename) {
+  return `/screenshots/${encodeURIComponent(siteId)}/${encodeURIComponent(tag)}/${encodeURIComponent(basename)}`;
+}
 
 const MAX_PROPOSALS = Math.max(1, Number(process.env.DISCOVER_MAX) || 6);
 const INSPECT_TIMEOUT_MS = Number(process.env.DISCOVER_INSPECT_TIMEOUT_MS) || 60000;
 const DRYRUN_TIMEOUT_MS = Number(process.env.DISCOVER_DRYRUN_TIMEOUT_MS) || 90000;
-const DEFAULT_RULESET = process.env.AQA_RULESET_ID || 'WCAG21AA';
+const DEFAULT_RULESET = process.env.AQA_RULESET_ID || 'wcag21_needfix_1';
 
 // What the user can ask the agent to concentrate on. Free-form focus strings are
 // passed through too; these are just the ones the UI offers and the heuristics
@@ -52,17 +74,17 @@ function setDiscover(siteId, patch) {
 
 // Fire-and-forget, mirroring startJourneyRun/startRealScan: the route returns
 // 202 and the client watches site.discover through the state poll.
-export function startDiscovery(siteId, { focus } = {}) {
+export function startDiscovery(siteId, { focus, intent } = {}) {
   setDiscover(siteId, {
     state: 'running', stage: 'inspecting', startedAt: Date.now(),
-    error: null, proposals: [], focus: focus || [],
+    error: null, proposals: [], focus: focus || [], intent: intent || '',
   });
   update((s) => {
     const site = findSite(siteId, s);
     s.activity.unshift({ ts: Date.now(), msg: `Discovering journeys for ${site?.url || siteId}` });
   });
 
-  return discover(siteId, focus || []).catch((err) => {
+  return discover(siteId, focus || [], intent || '').catch((err) => {
     setDiscover(siteId, { state: null, stage: null, error: err.message, finishedAt: Date.now() });
     update((s) => {
       s.activity.unshift({ ts: Date.now(), msg: `Journey discovery failed for ${findSite(siteId, s)?.url || siteId}: ${err.message}` });
@@ -71,7 +93,7 @@ export function startDiscovery(siteId, { focus } = {}) {
   });
 }
 
-async function discover(siteId, focus) {
+async function discover(siteId, focus, intent) {
   const site = findSite(siteId);
   if (!site) throw new Error('site not found');
 
@@ -85,14 +107,14 @@ async function discover(siteId, focus) {
   let source = 'heuristic';
   if (llmConfigured()) {
     try {
-      raw = await proposeWithLlm({ site, page, focus, repoHints });
+      raw = await proposeWithLlm({ site, page, focus, intent, repoHints });
       source = 'llm';
     } catch (err) {
       console.error(`discovery: LLM pass failed for ${siteId}, falling back to heuristics:`, err.message);
     }
   }
   if (!raw.length) {
-    raw = proposeWithHeuristics({ page, focus });
+    raw = proposeWithHeuristics({ page, focus, intent });
     source = 'heuristic';
   }
 
@@ -112,16 +134,34 @@ async function discover(siteId, focus) {
 
   setDiscover(siteId, { stage: 'validating', proposals: candidates.map((c) => ({ ...c, dryRun: null })) });
 
+  // A re-discovery replaces the whole proposals list, so the previous batch's
+  // screenshots are orphaned. Wipe the site's screenshot subtree before the
+  // fresh dry-runs write into it so the review UI never shows stale
+  // thumbnails and disk usage stays bounded.
+  const siteShotDir = resolve(SCREENSHOT_ROOT, siteId);
+  try { rmSync(siteShotDir, { recursive: true, force: true }); } catch { /* fine */ }
+
   // Dry-run each in a real browser. This is the step that separates a plausible
-  // selector from a real one.
+  // selector from a real one. M7: also captures a viewport screenshot after
+  // every successful step so the reviewer can see what the browser sees,
+  // not just the selector list.
   const proposals = [];
-  for (const cand of candidates) {
+  for (const [idx, cand] of candidates.entries()) {
     let dryRun = null;
+    const tag = `proposal-${idx}`;
     try {
       const r = await callRunner('/dryrun', {
         journey: { name: cand.name, startUrl: site.url, steps: cand.steps, viewport: site.viewport },
+        screenshotDir: siteShotDir,
+        screenshotTag: tag,
       }, DRYRUN_TIMEOUT_MS);
-      dryRun = { ok: Boolean(r.ok), error: r.error || null, steps: r.steps || [] };
+      // The runner returns a screenshot BASENAME per step. Rewrite each to
+      // the public URL the static handler serves so the UI can drop it into
+      // <img src> without knowing the filesystem layout.
+      const steps = (r.steps || []).map((s) => s.screenshot
+        ? { ...s, screenshot: screenshotUrl(siteId, tag, s.screenshot) }
+        : s);
+      dryRun = { ok: Boolean(r.ok), error: r.error || null, steps };
     } catch (err) {
       dryRun = { ok: false, error: err.message, steps: [] };
     }
@@ -164,7 +204,7 @@ function collectRepoHints(repoPath) {
 
 // ── LLM proposal ────────────────────────────────────────────────────────────
 
-async function proposeWithLlm({ site, page, focus, repoHints }) {
+async function proposeWithLlm({ site, page, focus, intent, repoHints }) {
   const system = [
     'You design accessibility test journeys for a web page.',
     'A journey is an ordered list of steps a real browser walks, ending in at least one snapshot that captures the DOM for scoring.',
@@ -174,12 +214,16 @@ async function proposeWithLlm({ site, page, focus, repoHints }) {
     'Prefer stable hooks: id, data-testid, aria-label. Avoid nth-of-type when a named hook exists.',
     'snapshot.context scopes scoring to a subtree; set it when the journey is about one region (a menu, a drawer, a form).',
     'Mark a step optional:true when its target may legitimately be absent (cookie banners above all).',
+    'If the operator supplied an "intent" prompt, treat it as the primary guide: it names the flows to prioritize and the ones to skip. Focus chips are secondary hints.',
     'Return JSON: { "journeys": [{ "name": string, "focus": string, "steps": [step] }] }',
     `Return at most ${MAX_PROPOSALS} journeys, each 1-6 steps, covering distinct user flows.`,
   ].join(' ');
 
   const user = JSON.stringify({
     siteUrl: site.url,
+    // The free-form onboarding prompt — verbatim so the model can weigh phrases
+    // like "skip the blog" or "cover the 3-step checkout" against the focus chips.
+    intent: intent || '',
     focusAreas: focus?.length ? focus : FOCUS_AREAS,
     page: {
       title: page.title, nav: page.nav, buttons: page.buttons,
@@ -198,9 +242,13 @@ async function proposeWithLlm({ site, page, focus, repoHints }) {
 // ── deterministic fallback ──────────────────────────────────────────────────
 
 // No API key, or the model failed: still propose something useful from the page
-// structure alone. Covers the flows the focus chips name.
-export function proposeWithHeuristics({ page, focus }) {
-  const wanted = (area) => !focus?.length || focus.some((f) => String(f).toLowerCase().includes(area));
+// structure alone. Covers the flows the focus chips name. When the operator
+// supplied a free-form intent instead of chips, harvest known area keywords
+// from the prompt so the heuristic still narrows correctly.
+export function proposeWithHeuristics({ page, focus, intent }) {
+  const derivedFocus = deriveFocusFromIntent(intent);
+  const effective = (focus && focus.length) ? focus : derivedFocus;
+  const wanted = (area) => !effective.length || effective.some((f) => String(f).toLowerCase().includes(area));
   const out = [];
   const byText = (list, re) => (list || []).find((x) => re.test(x.text || ''));
 
@@ -272,11 +320,33 @@ export function proposeWithHeuristics({ page, focus }) {
   return out;
 }
 
+// Pull keyword hints out of the free-form intent so the heuristic fallback
+// still narrows when the operator wrote prose instead of ticking chips.
+// Tolerant on purpose: "add to cart", "cart page", "shopping bag" all match.
+export function deriveFocusFromIntent(intent) {
+  if (!intent) return [];
+  const t = String(intent).toLowerCase();
+  const found = [];
+  if (/\b(home|landing|homepage)\b/.test(t)) found.push('Home');
+  if (/\b(menu|mega[- ]?menu|nav|navigation)\b/.test(t)) found.push('Mega-menu');
+  if (/\b(cart|basket|bag|add[- ]to[- ]cart)\b/.test(t)) found.push('Add to cart');
+  if (/\b(search|find|query)\b/.test(t)) found.push('Search');
+  if (/\b(log ?in|sign ?in|account|auth)\b/.test(t)) found.push('Login');
+  if (/\b(checkout|purchase|payment|shipping|delivery)\b/.test(t)) found.push('Checkout');
+  return found;
+}
+
 // ── accept ──────────────────────────────────────────────────────────────────
 
 // Turn reviewed proposals into real journeys. Names already on the site are
 // skipped rather than duplicated, matching the idempotent create route.
-export function acceptProposals(siteId, indices) {
+//
+// M8: with autoRun:true, every newly-created journey is fired off through the
+// runner so the reviewer moves straight from approval into a scoring run.
+// The runner queue serializes browser launches, so all approved journeys
+// still walk one at a time - autoRun just removes the "click Run on each
+// journey afterwards" step.
+export function acceptProposals(siteId, indices, { autoRun = false } = {}) {
   const site = findSite(siteId);
   if (!site) return { error: 'site not found' };
   const proposals = site.discover?.proposals || [];
@@ -310,9 +380,16 @@ export function acceptProposals(siteId, indices) {
     const target = findSite(siteId, s);
     if (target?.discover) target.discover = { ...target.discover, proposals: [], acceptedAt: Date.now() };
     if (created.length) {
-      s.activity.unshift({ ts: Date.now(), msg: `Accepted ${created.length} discovered journey(s) for ${site.url}` });
+      s.activity.unshift({ ts: Date.now(), msg: `${autoRun ? 'Approved & scanning' : 'Accepted'} ${created.length} discovered journey(s) for ${site.url}` });
     }
   });
+
+  // Fire off runs OUTSIDE the update() block so a failing runner never rolls
+  // back the newly-persisted journeys. startJourneyRun is itself fire-and-
+  // forget, so we can chain them without awaiting.
+  if (autoRun) {
+    for (const j of created) startJourneyRun(j.id);
+  }
 
   return { created, skipped };
 }

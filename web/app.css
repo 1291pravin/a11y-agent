@@ -287,6 +287,63 @@ tr.click:hover td { background: var(--accent-soft); }
   background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: 1px;
 }
 
+/* Free-form intent echoed back on the proposals screen so the reviewer sees
+   what the agent was told to prioritize. */
+.intent-echo {
+  border-left: 3px solid var(--accent); background: var(--accent-soft);
+  padding: 10px 14px; border-radius: 8px; margin: 6px 0 14px; max-width: 720px;
+}
+.intent-echo-l {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--accent); font-weight: 700; margin-bottom: 3px;
+}
+.intent-echo-b { font-size: 13px; color: var(--ink); line-height: 1.55; }
+
+/* M7: proposal grid replaces the review table. Each proposal is a card with
+   a per-step screenshot strip so a reviewer can skim what the journey visits
+   rather than parse selectors. */
+.proposal-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px; margin-top: 6px;
+}
+.proposal-card {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 8px;
+}
+.proposal-card.failed { border-color: var(--crit); background: var(--crit-bg); }
+.prophead { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.propname { font-weight: 650; color: var(--ink); font-size: 13.5px; }
+.propmeta { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+.shotstrip {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px;
+}
+.shotthumb, .shotph {
+  position: relative; aspect-ratio: 16 / 10; border-radius: 6px; overflow: hidden;
+  background: var(--surface-2); border: 1px solid var(--line);
+}
+.shotthumb img {
+  width: 100%; height: 100%; object-fit: cover; object-position: top center; display: block;
+}
+.shotph {
+  display: grid; place-items: center; color: var(--ink-faint); font-size: 10px; text-align: center;
+}
+.shotph.skipped { background: var(--warn-bg); }
+.steplbl {
+  position: absolute; left: 4px; bottom: 4px; z-index: 2;
+  background: rgba(0, 42, 70, 0.75); color: #fff;
+  padding: 1px 6px; border-radius: 4px; font-size: 9.5px; font-weight: 650;
+  max-width: calc(100% - 8px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.shotph .steplbl { position: static; background: transparent; color: var(--ink-faint); font-weight: 500; }
+.stepprev-line {
+  font-family: "Cascadia Code", Consolas, monospace; font-size: 10.5px; color: var(--ink-faint);
+  overflow-wrap: anywhere; padding: 2px 2px 0;
+}
+.propfoot { display: flex; align-items: center; justify-content: space-between; padding-top: 6px; border-top: 1px dashed var(--line); }
+.proplbl { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 650; color: var(--ink-soft); cursor: pointer; }
+.proplbl input { accent-color: var(--accent); width: 16px; height: 16px; }
+.propfoot-r { display: inline-flex; gap: 6px; }
+
 /* ── kanban ─────────────────────────────── */
 .kanban-wrap { overflow-x: auto; }
 .kanban { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px; min-width: 760px; }

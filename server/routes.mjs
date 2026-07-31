@@ -1,18 +1,18 @@
 // API handlers. All JSON in/out. Router in index.mjs calls handle(req, res, url).
 
-import { existsSync } from 'node:fs';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { getState, update, nextId, resetToSeed, usesRealFleet, bootstrapFleet } from './store.mjs';
-import { dispatchTask, retryTask, demoScan, startRealScan, verifyMerge } from './orchestrator.mjs';
-import { buildIndex, mapCause } from './mapper.mjs';
+import { dispatchTask, retryTask, demoScan, startRealScan, verifyMerge, cursorMode } from './orchestrator.mjs';
 import { slotFor, schedulerEnabled } from './scheduler.mjs';
 import { allJourneys, findJourney, makeJourney, startJourneyRun, runnerHealth } from './journeys.mjs';
 import { validateJourney } from './journey-model.mjs';
 import { startDiscovery, acceptProposals, FOCUS_AREAS } from './journey-propose.mjs';
+import { startFixRun, cancelFixRun, findFixRun, allFixRuns } from './fix-run.mjs';
 import { journeyReportMarkdown, actionFor } from './report.mjs';
-import { scoreCauses, openCauses } from './aqa-sync.mjs';
+import { scoreCauses, openCauses, formatCauseLocator } from './aqa-sync.mjs';
 import * as aqa from '../integrations/aqa.mjs';
 import * as cursor from '../integrations/cursor.mjs';
+import * as cursorCli from '../integrations/cursor-cli.mjs';
 
 // M5: optional shared admin token. When set, every non-GET /api/* route
 // requires "authorization: Bearer <token>" - except the GitHub webhook,
@@ -57,6 +57,24 @@ export async function handle(req, res, url) {
     return json(res, 201, site);
   }
 
+  // Update editable site fields (local repoPath is required for Cursor CLI fallback).
+  let m;
+  if (method === 'PATCH' && (m = path.match(/^\/api\/sites\/([\w-]+)$/))) {
+    const body = await readBody(req);
+    let updated = null;
+    update((s) => {
+      const site = s.sites.find((x) => x.id === m[1]);
+      if (!site) return;
+      if (body.repoPath !== undefined) site.repoPath = body.repoPath ? String(body.repoPath) : null;
+      if (body.repo !== undefined) site.repo = body.repo ? String(body.repo) : null;
+      if (body.framework !== undefined) site.framework = String(body.framework || 'unknown');
+      updated = site;
+      s.activity.unshift({ ts: Date.now(), msg: `Updated site ${site.url}` });
+    });
+    if (!updated) return json(res, 404, { error: 'site not found' });
+    return json(res, 200, updated);
+  }
+
   // M5: batch onboarding. Body is raw CSV text with a header row naming the
   // columns (url,repo,suiteId required; testId,repoPath,framework optional;
   // any order, unknown columns ignored). Rows whose url or suiteId already
@@ -78,8 +96,6 @@ export async function handle(req, res, url) {
     });
     return json(res, 200, { created, skipped, errors: parsed.errors });
   }
-
-  let m;
 
   // ── Journeys (evaluate path) ──────────────────────────────────────────────
   // A journey is the supplement to a site's AQA suite, never a replacement:
@@ -200,7 +216,16 @@ export async function handle(req, res, url) {
     if (site.discover?.state === 'running') return json(res, 409, { error: 'discovery already running for this site' });
     const body = await readBody(req);
     const focus = Array.isArray(body.focus) ? body.focus.map(String) : [];
-    startDiscovery(site.id, { focus });
+    // Free-form intent trumps focus chips. Persisted on the site so a
+    // re-discovery uses the same prompt without the UI having to remember it.
+    const intent = typeof body.intent === 'string' ? body.intent.slice(0, 4000) : (site.intent || '');
+    if (intent !== site.intent) {
+      update((s) => {
+        const t = s.sites.find((x) => x.id === site.id);
+        if (t) t.intent = intent;
+      });
+    }
+    startDiscovery(site.id, { focus, intent });
     return json(res, 202, { ok: true, siteId: site.id });
   }
 
@@ -208,9 +233,36 @@ export async function handle(req, res, url) {
     const site = getState().sites.find((x) => x.id === m[1]);
     if (!site) return json(res, 404, { error: 'site not found' });
     const body = await readBody(req);
-    const result = acceptProposals(site.id, body.accept);
+    const result = acceptProposals(site.id, body.accept, { autoRun: Boolean(body.autoRun) });
     if (result.error) return json(res, 400, { error: result.error });
-    return json(res, 201, { created: result.created.length, skipped: result.skipped, journeys: result.created });
+    return json(res, 201, { created: result.created.length, skipped: result.skipped, journeys: result.created, autoRun: Boolean(body.autoRun) });
+  }
+
+  // M8: same shape as /accept, but always kicks off a scan on every created
+  // journey. This is the "Approve & scan" button on the review screen -
+  // separated as its own route so a client that just wants to persist the
+  // journeys without triggering runs (batch tooling, CLI) can still use
+  // /accept without opting in.
+  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/journeys\/approve$/))) {
+    const site = getState().sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    const body = await readBody(req);
+    const result = acceptProposals(site.id, body.accept, { autoRun: true });
+    if (result.error) return json(res, 400, { error: result.error });
+    return json(res, 201, {
+      created: result.created.length, skipped: result.skipped, journeys: result.created, autoRun: true,
+    });
+  }
+
+  // M8: consolidated site report - aggregates causes across every journey on
+  // the site plus the AQA suite. Feeds the #/site/:id/report UI screen (the
+  // "Fix All" surface); the per-journey markdown report at
+  // /api/journeys/:id/report stays as it is for exports.
+  if (method === 'GET' && (m = path.match(/^\/api\/sites\/([\w-]+)\/report$/))) {
+    const s = getState();
+    const site = s.sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    return json(res, 200, buildSiteReport(s, site));
   }
 
   if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/scan$/))) {
@@ -226,33 +278,13 @@ export async function handle(req, res, url) {
     return json(res, 202, { ok: true, mode: 'demo' });
   }
 
-  // M3: rebuild the source index and remap every open cause of the site.
-  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/remap$/))) {
-    const site = getState().sites.find((x) => x.id === m[1]);
-    if (!site) return json(res, 404, { error: 'site not found' });
-    if (!site.repoPath) return json(res, 400, { error: 'site has no repoPath; set one to enable source mapping' });
-    if (!existsSync(site.repoPath)) return json(res, 400, { error: `repoPath does not exist: ${site.repoPath}` });
-    const index = buildIndex(site.repoPath);
-    let mapped = 0;
-    let unmapped = 0;
-    update((s) => {
-      for (const cause of s.causes) {
-        if (cause.siteId !== site.id || cause.status !== 'open') continue;
-        cause.mappedFile = mapCause(cause, index) || cause.mappedFile || null;
-        if (cause.mappedFile) mapped += 1; else unmapped += 1;
-      }
-      s.activity.unshift({ ts: Date.now(), msg: `Remapped ${site.url}: ${mapped} mapped, ${unmapped} unmapped` });
-    });
-    return json(res, 200, { mapped, unmapped });
-  }
-
-  // M3: unmapped open causes export as a fix-report.md handoff for humans.
+  // Audit-only sites (no GitHub repo): export open causes as fix-report.md.
   if (method === 'GET' && (m = path.match(/^\/api\/sites\/([\w-]+)\/fix-report$/))) {
     const s = getState();
     const site = s.sites.find((x) => x.id === m[1]);
     if (!site) return json(res, 404, { error: 'site not found' });
-    const causes = s.causes.filter((c) => c.siteId === site.id && c.status === 'open' && !c.mappedFile);
-    const body = fixReport(site, causes);
+    const causes = s.causes.filter((c) => c.siteId === site.id && c.status === 'open');
+    const body = fixReport(site, causes, { auditOnly: !site.repo });
     res.writeHead(200, {
       'content-type': 'text/markdown; charset=utf-8',
       'content-disposition': `attachment; filename="fix-report-${site.id}.md"`,
@@ -261,11 +293,44 @@ export async function handle(req, res, url) {
     return res.end(body);
   }
 
+  // M9: batch dispatch. Body may include:
+  //   causeIds:[cause-id],   // explicit set; omit to dispatch every dispatchable cause
+  //   concurrency:number,    // 1-10, defaults to FIXRUN_CONCURRENCY env or 3
+  //   budgetUsd:number,      // dollars; run stops itself before exceeding
+  //   autoMerge:boolean      // reserved for M10 - Local Verifier gates merges
+  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/fix-runs$/))) {
+    const body = await readBody(req);
+    const result = startFixRun(m[1], {
+      causeIds: Array.isArray(body.causeIds) ? body.causeIds : undefined,
+      concurrency: body.concurrency,
+      budgetUsd: body.budgetUsd,
+      autoMerge: body.autoMerge,
+    });
+    if (result.error) return json(res, 400, { error: result.error });
+    return json(res, 201, result.run);
+  }
+
+  if (method === 'GET' && (m = path.match(/^\/api\/sites\/([\w-]+)\/fix-runs$/))) {
+    const runs = allFixRuns().filter((r) => r.siteId === m[1]);
+    return json(res, 200, { runs });
+  }
+
+  if (method === 'GET' && (m = path.match(/^\/api\/fix-runs\/([\w-]+)$/))) {
+    const run = findFixRun(m[1]);
+    if (!run) return json(res, 404, { error: 'fix run not found' });
+    return json(res, 200, run);
+  }
+
+  if (method === 'POST' && (m = path.match(/^\/api\/fix-runs\/([\w-]+)\/cancel$/))) {
+    const result = cancelFixRun(m[1]);
+    if (result.error) return json(res, 404, { error: result.error });
+    return json(res, 200, result.run);
+  }
+
   if (method === 'POST' && (m = path.match(/^\/api\/causes\/([\w-]+)\/dispatch$/))) {
     const s = getState();
     const cause = s.causes.find((x) => x.id === m[1]);
     if (!cause) return json(res, 404, { error: 'cause not found' });
-    if (!cause.mappedFile) return json(res, 400, { error: 'cause is unmapped; export a report instead' });
     if (cause.status !== 'open') return json(res, 409, { error: `cause already ${cause.status}` });
     const site = s.sites.find((x) => x.id === cause.siteId);
     if (!site) return json(res, 404, { error: 'site not found' });
@@ -348,22 +413,28 @@ export async function handle(req, res, url) {
 // and the full journey report describe the same rule the same way.
 
 
-function fixReport(site, causes) {
+function fixReport(site, causes, { auditOnly = true } = {}) {
   const lines = [
     `# Fix report - ${site.url}`,
     '',
     `- Site: ${site.url}`,
     `- Suite: ${site.suiteId}`,
     `- Generated: ${new Date().toISOString()}`,
-    `- Unmapped open causes: ${causes.length}`,
-    '',
-    'These root causes could not be mapped to a source file (vendor embeds, CMS',
-    'content, or code outside the indexed repo), so no fix task was dispatched.',
-    'Hand this report to the owning team.',
+    `- Open causes: ${causes.length}`,
     '',
   ];
-  if (!causes.length) lines.push('Nothing to hand off - every open cause is mapped to a source file.', '');
+  if (auditOnly) {
+    lines.push(
+      'This site has no GitHub repo attached, so fixes cannot be dispatched automatically.',
+      'Hand this report to the owning team.',
+      '',
+    );
+  } else {
+    lines.push('Open accessibility root causes from the latest AQA run.', '');
+  }
+  if (!causes.length) lines.push('No open causes to report.', '');
   for (const c of causes) {
+    const locator = formatCauseLocator(c);
     lines.push(
       `## ${c.title}`,
       '',
@@ -371,12 +442,80 @@ function fixReport(site, causes) {
       `- Severity: ${c.severity}`,
       `- Instances: ${c.instances}`,
       `- Pages: ${(c.pages || []).join(', ') || '-'}`,
+      locator ? `- AQA locator: \`${locator}\`` : '',
       `- Evidence: \`${c.evidence || '-'}\``,
       `- Suggested action: ${actionFor(c.ruleId)}`,
       '',
     );
   }
   return lines.join('\n');
+}
+
+// M8: shape the site report the way the "Fix All" screen needs it - a single
+// payload the UI can render without walking the full public state. Aggregates
+// causes across every journey plus the AQA suite so the reviewer sees the
+// site as a whole, not per-journey. Severity breakdown is precomputed so the
+// UI stays presentational.
+function buildSiteReport(s, site) {
+  const journeys = (s.journeys || []).filter((j) => j.siteId === site.id);
+  const journeyRunning = journeys.filter((j) => j.runState === 'running').length;
+  const journeyReady = journeys.filter((j) => j.lastRun && j.lastRun.ok !== false).length;
+  const journeyFailed = journeys.filter((j) => j.lastRun && j.lastRun.ok === false).length;
+
+  const causesForSite = s.causes.filter((c) => c.siteId === site.id);
+  const openList = openCauses(causesForSite);
+  // Score across the whole site: units = one per journey snapshot (visible
+  // surface). Matches how the per-journey score normalizes.
+  const snapshotUnits = journeys.reduce((acc, j) => acc + (j.lastRun?.snapshots?.length || 0), 0);
+  const score = scoreCauses(openList, { units: Math.max(1, snapshotUnits || journeys.length || 1) });
+
+  const bySev = { critical: 0, serious: 0, moderate: 0, minor: 0 };
+  for (const c of openList) bySev[c.severity] = (bySev[c.severity] || 0) + (c.instances || 1);
+
+  const causes = openList.map((c) => ({
+    id: c.id,
+    title: c.title,
+    ruleId: c.ruleId,
+    rule: c.rule,
+    severity: c.severity,
+    instances: c.instances,
+    pages: c.pages || [],
+    journeyId: c.journeyId || null,
+    status: c.status,
+    // A cause the fix batch already has a task or PR against is not eligible
+    // for re-dispatch. The UI uses this to gray out its row and hide the
+    // Include checkbox.
+    hasOpenTask: s.tasks.some((t) => t.causeId === c.id && (t.state === 'queued' || t.state === 'running')),
+    hasOpenPr: s.prs.some((p) => p.causeId === c.id && p.state === 'open'),
+  }));
+
+  return {
+    site: {
+      id: site.id, url: site.url, mode: site.mode,
+      score, framework: site.framework, repo: site.repo,
+    },
+    journeys: journeys.map((j) => ({
+      id: j.id, name: j.name,
+      runState: j.runState,
+      lastRun: j.lastRun ? {
+        at: j.lastRun.at, ok: j.lastRun.ok, unscored: j.lastRun.unscored,
+        error: j.lastRun.error, score: j.lastRun.score, causes: j.lastRun.causes,
+        snapshots: j.lastRun.snapshots?.length || 0,
+      } : null,
+    })),
+    stats: {
+      journeys: journeys.length,
+      journeyRunning, journeyReady, journeyFailed,
+      openCauses: openList.length,
+      severity: bySev,
+      // A batch dispatch cost is capped separately (see fix-runs) but this is
+      // the ceiling to display next to the "Fix All" CTA so the operator sees
+      // roughly what they are about to authorize.
+      dispatchable: causes.filter((c) => !c.hasOpenTask && !c.hasOpenPr).length,
+    },
+    causes,
+    lastReportAt: Date.now(),
+  };
 }
 
 function publicState() {
@@ -397,6 +536,7 @@ function publicState() {
     causes: s.causes,
     tasks: s.tasks,
     prs: s.prs,
+    fixRuns: s.fixRuns || [],
     activity: s.activity.slice(0, 30),
   };
 }
@@ -404,7 +544,9 @@ function publicState() {
 function modeInfo() {
   return {
     aqa: aqa.isReal ? 'real' : 'demo',
-    cursor: cursor.isReal ? 'real' : 'demo',
+    cursor: cursor.isReal ? 'real' : (cursorCli.isAvailable() ? 'cli-ready' : 'demo'),
+    cursorMode: cursorMode(),
+    cursorCli: cursorCli.isAvailable(),
     auth: Boolean(ADMIN_TOKEN),
     schedule: schedulerEnabled(),
   };
@@ -434,7 +576,29 @@ function makeSite(body) {
     framework: body.framework || 'unknown',
     flows: [],
     discover: null,
+    // Free-form onboarding prompt — what the customer wants us to focus on,
+    // fed into the Journey Designer LLM prompt. Optional; empty string when
+    // the customer skipped the textarea.
+    intent: body.intent ? String(body.intent).slice(0, 4000) : '',
+    // Optional dev-server config; used by the Local Verifier once M10 lands.
+    // Persisted here now so the onboarding form can capture it up front.
+    devServer: normalizeDevServer(body.devServer),
   };
+}
+
+function normalizeDevServer(input) {
+  if (!input || typeof input !== 'object') return null;
+  const s = (k) => (input[k] ? String(input[k]).slice(0, 500) : '');
+  const out = {
+    installCmd: s('installCmd'),
+    startCmd: s('startCmd'),
+    previewUrl: s('previewUrl'),
+    healthPath: s('healthPath') || '/',
+    readyTimeoutSec: Math.max(5, Math.min(600, Number(input.readyTimeoutSec) || 60)),
+    envFile: s('envFile'),
+  };
+  if (!out.installCmd && !out.startCmd && !out.previewUrl) return null;
+  return out;
 }
 
 // Minimal CSV: comma-separated cells, optional surrounding double quotes,

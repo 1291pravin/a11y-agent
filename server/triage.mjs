@@ -36,7 +36,6 @@ function deterministicTriage(causes) {
     g.instances += cause.instances;
     g.pages = [...new Set([...g.pages, ...(cause.pages || [])])].slice(0, 8);
     g.severity = pickHigherSeverity(g.severity, cause.severity);
-    if (!g.mappedFile && cause.mappedFile) g.mappedFile = cause.mappedFile;
     if (cause.evidence && cause.evidence !== g.evidence) {
       g.evidence = g.evidence ? `${g.evidence}; ${cause.evidence}` : cause.evidence;
     }
@@ -56,7 +55,8 @@ async function llmTriage(causes, siteUrl) {
     severity: c.severity,
     instances: c.instances,
     pages: c.pages,
-    mappedFile: c.mappedFile,
+    selector: c.selector,
+    tagName: c.tagName,
     evidence: String(c.evidence || '').slice(0, 200),
   }));
 
@@ -92,7 +92,8 @@ async function llmTriage(causes, siteUrl) {
       severity: cluster.severity || maxSeverity(members),
       instances: members.reduce((n, c) => n + c.instances, 0),
       pages: [...new Set(members.flatMap((c) => c.pages || []))].slice(0, 8),
-      mappedFile: members.find((c) => c.mappedFile)?.mappedFile || null,
+      selector: members.find((c) => c.selector && c.selector !== 'unknown')?.selector || members[0].selector,
+      tagName: members.find((c) => c.tagName)?.tagName || members[0].tagName,
       evidence: members.map((c) => c.evidence).filter(Boolean).slice(0, 3).join('; '),
       triaged: true,
     });

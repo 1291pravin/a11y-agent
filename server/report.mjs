@@ -8,7 +8,7 @@
 // Shared vocabulary (the rule -> suggested action map) lives here so both
 // reports speak the same way about the same rule.
 
-import { gradeFor } from './aqa-sync.mjs';
+import { gradeFor, formatCauseLocator } from './aqa-sync.mjs';
 
 export const RULE_ACTIONS = {
   'image-alt': 'Add descriptive alt text to the image (or alt="" if purely decorative).',
@@ -19,7 +19,7 @@ export const RULE_ACTIONS = {
   'heading-order': 'Restructure headings so levels increase one step at a time without skipping.',
 };
 
-export const DEFAULT_ACTION = 'Review the element against the rule and correct the markup at the mapped source location.';
+export const DEFAULT_ACTION = 'Review the element against the rule and correct the markup for the AQA locator.';
 
 export function actionFor(ruleId) {
   return RULE_ACTIONS[ruleId] || DEFAULT_ACTION;
@@ -100,7 +100,7 @@ export function journeyReportMarkdown({ journey, site, causes = [] }) {
       `- Severity: ${c.severity}`,
       `- Instances: ${c.instances}`,
       `- Where: ${(c.pages || []).join(', ') || '-'}`,
-      `- Source: ${c.mappedFile || 'unmapped (vendor, CMS, or outside the indexed repo)'}`,
+      `- AQA locator: ${formatCauseLocator(c) || '(not provided)'}`,
       `- Status: ${c.status}`,
       `- Evidence: \`${c.evidence || '-'}\``,
       `- Suggested action: ${actionFor(c.ruleId)}`,

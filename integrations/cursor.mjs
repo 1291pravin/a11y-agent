@@ -49,18 +49,21 @@ export async function getRun(agentId, runId) {
 // Build the fix prompt from a triaged root cause. Kept here so the prompt contract
 // lives next to the API client. One task per root cause, evidence included.
 export function buildFixPrompt(cause, site) {
+  const locator = [cause.tagName && `tag: <${cause.tagName}>`, cause.selector && cause.selector !== 'unknown' && `selector: ${cause.selector}`]
+    .filter(Boolean)
+    .join(', ');
   return [
     `Fix an accessibility violation in this repository.`,
     ``,
     `Rule: ${cause.rule} (${cause.ruleId})`,
     `Root cause: ${cause.title}`,
     `Instances: ${cause.instances} across pages: ${cause.pages.join(', ')}`,
-    `Likely source location: ${cause.mappedFile}`,
+    locator ? `AQA locator: ${locator}` : 'AQA locator: (not provided)',
     `DOM evidence: ${cause.evidence}`,
     `Live site: ${site.url}`,
     ``,
     `Requirements:`,
-    `- Fix the root cause at the mapped location; do not patch page-by-page.`,
+    `- Find the template/component that renders the AQA locator above and fix the root cause there; do not patch page-by-page.`,
     `- Keep the change minimal and consistent with surrounding code style.`,
     `- Run existing tests if present.`,
     `- Open a PR titled "fix(a11y): <short description>" and include the rule,`,

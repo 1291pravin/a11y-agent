@@ -32,15 +32,15 @@ test('deterministic triage merges same rule + similar title', async () => {
   const causes = [
     {
       id: 'c1', siteId: 's1', ruleId: 'image-alt', rule: 'IMAGE-ALT', title: 'Add missing alt text',
-      severity: 'critical', instances: 2, pages: ['Home'], mappedFile: null, status: 'open', evidence: 'a',
+      severity: 'critical', instances: 2, pages: ['Home'], selector: 'img.hero', tagName: 'img', status: 'open', evidence: 'a',
     },
     {
       id: 'c2', siteId: 's1', ruleId: 'image-alt', rule: 'IMAGE-ALT', title: 'Add missing alt text',
-      severity: 'serious', instances: 3, pages: ['PLP'], mappedFile: 'src/Hero.vue:4', status: 'open', evidence: 'b',
+      severity: 'serious', instances: 3, pages: ['PLP'], selector: 'img.product', tagName: 'img', status: 'open', evidence: 'b',
     },
     {
       id: 'c3', siteId: 's1', ruleId: 'frame-title', rule: 'FRAME-TITLE', title: 'Title the chat iframe',
-      severity: 'serious', instances: 1, pages: ['Home'], mappedFile: null, status: 'open', evidence: 'c',
+      severity: 'serious', instances: 1, pages: ['Home'], selector: 'iframe.chat', tagName: 'iframe', status: 'open', evidence: 'c',
     },
   ];
   const out = await triageCauses(causes);
@@ -48,7 +48,7 @@ test('deterministic triage merges same rule + similar title', async () => {
   const merged = out.find((c) => c.ruleId === 'image-alt');
   assert.equal(merged.instances, 5);
   assert.equal(merged.severity, 'critical');
-  assert.equal(merged.mappedFile, 'src/Hero.vue:4');
+  assert.equal(merged.selector, 'img.hero');
   assert.deepEqual(merged.pages.sort(), ['Home', 'PLP']);
 });
 

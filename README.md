@@ -97,9 +97,45 @@ AQA_ANALYZER_URL=...               # override to pin a local copy of aqa-analyze
 
 Journey CRUD lives under `/api/journeys` (writes obey `ADMIN_TOKEN` like every other
 write route); `POST /api/journeys/:id/run` returns 202 and the result lands in the
-journey's `lastRun`. There is **no UI for this yet**, and the path has not been
-confirmed against a live AQA key - see the evaluate checklist in
-[PLAN.md](PLAN.md) before trusting its output.
+journey's `lastRun`. The path has not been confirmed against a live AQA key - see
+the evaluate checklist in [PLAN.md](PLAN.md) before trusting its output.
+
+## Autopilot flow (M6-M9)
+
+The quick-scan onboarding path is now the "second flow" for hands-off customers:
+
+1. **Onboard** at `#/onboard/quick` - URL + optional repo + a **free-form intent
+   textarea** (what the site does, who uses it, which flows matter). Optional
+   dev-server config for the future Local Verifier (M10). No focus checkboxes.
+2. **Discover** kicks off automatically: the runner inspects the page, the
+   Journey Designer LLM proposes journeys (intent is the primary signal), and
+   every proposal is dry-run in a real browser. Each successful dry-run step
+   is screenshot-captured under `data/screenshots/` and served at
+   `/screenshots/*`.
+3. **Review** at `#/site/:id/proposed`: a card grid with per-step screenshot
+   strips lets the operator skim what each journey visits before approving.
+4. **Approve & scan**: `POST /api/sites/:id/journeys/approve` persists the
+   selected journeys and fires an evaluate run on each. The operator lands
+   on `#/site/:id/report` while scans finish in the background.
+5. **Fix All**: on the site report, the button opens a batch fix run
+   (`POST /api/sites/:id/fix-runs`) - concurrency and USD budget capped
+   (`FIXRUN_CONCURRENCY`, `FIXRUN_BUDGET_USD`). The command centre at
+   `#/site/:id/fix-runs/:runId` shows queued/working/verifying/done/failed
+   lanes, a budget bar, and a cancel button.
+
+Environment knobs (all optional, defaults in `.env.example`):
+
+```sh
+SCREENSHOT_DIR=data/screenshots   # where the runner writes step thumbnails
+FIXRUN_CONCURRENCY=3              # max in-flight fix tasks per batch
+FIXRUN_BUDGET_USD=25              # batch stops itself before exceeding this
+FIXRUN_TASK_COST_USD=0.75         # heuristic; Cursor does not report cost
+FIXRUN_ADVANCE_MS=3000            # how often to refill the concurrency window
+```
+
+M10 (Local Verifier: dev-server-per-PR before/after evidence) and M11-M12
+(learning loop + autopilot) remain roadmap - see `.lavish/autopilot-plan.html`
+for the plan artifact.
 
 ## Try the demo loop
 

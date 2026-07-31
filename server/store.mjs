@@ -166,6 +166,7 @@ function seedDemo() {
       causes: [],
       tasks: [],
       prs: [],
+      fixRuns: [],
       activity: [{ ts: Date.now(), msg: 'Loading fleet from AQA…' }],
     };
   }

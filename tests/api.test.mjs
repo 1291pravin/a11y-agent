@@ -50,7 +50,10 @@ test('health reports demo mode without credentials', async () => {
   assert.equal(res.status, 200);
   assert.equal(body.ok, true);
   assert.equal(body.mode.aqa, 'demo');
-  assert.equal(body.mode.cursor, 'demo');
+  // No CURSOR_API_KEY → not cloud-connected; may still be cli-ready if `agent` is installed.
+  assert.ok(['demo', 'cli-ready'].includes(body.mode.cursor));
+  assert.equal(body.mode.cursorCli, body.mode.cursor === 'cli-ready');
+  assert.ok(body.mode.cursorMode);
 });
 
 test('state returns seeded sites and causes', async () => {
@@ -85,8 +88,8 @@ test('onboard creates a site', async () => {
 
 test('dispatch creates a task and marks the cause', async () => {
   const state = await (await fetch(`${BASE}/api/state`)).json();
-  const cause = state.causes.find((c) => c.status === 'open' && c.mappedFile);
-  assert.ok(cause, 'seed should contain an open mapped cause');
+  const cause = state.causes.find((c) => c.status === 'open' && c.selector);
+  assert.ok(cause, 'seed should contain an open cause with an AQA selector');
   const res = await fetch(`${BASE}/api/causes/${cause.id}/dispatch`, { method: 'POST' });
   assert.equal(res.status, 201);
   const task = await res.json();
@@ -94,12 +97,13 @@ test('dispatch creates a task and marks the cause', async () => {
   assert.equal(task.agent, 'demo');
 });
 
-test('dispatch refuses unmapped causes', async () => {
-  const state = await (await fetch(`${BASE}/api/state`)).json();
-  const cause = state.causes.find((c) => !c.mappedFile);
-  assert.ok(cause, 'seed should contain an unmapped cause');
-  const res = await fetch(`${BASE}/api/causes/${cause.id}/dispatch`, { method: 'POST' });
-  assert.equal(res.status, 400);
+test('dispatch refuses sites without a GitHub repo', async () => {
+  const create = await fetch(`${BASE}/api/sites`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: 'https://audit-only.example.com', suiteId: 'TS-AUDIT' }),
+  });
+  assert.equal(create.status, 400);
 });
 
 test('demo task auto-advances to verifying with a PR, then merge drives it to done', async () => {

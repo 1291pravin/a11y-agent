@@ -20,12 +20,12 @@ const CAUSES = [
   {
     title: 'Inputs missing labels', rule: 'WCAG 1.3.1 A', ruleId: 'label',
     severity: 'critical', instances: 4, pages: ['Checkout form'],
-    mappedFile: 'src/Checkout.vue:44', status: 'open', evidence: '<input id="email">',
+    selector: '#email', tagName: 'input', status: 'open', evidence: '<input id="email">',
   },
   {
     title: 'Low-contrast pay button', rule: 'WCAG 1.4.3 AA', ruleId: 'color-contrast',
     severity: 'serious', instances: 1, pages: ['Payment step'],
-    mappedFile: null, status: 'open', evidence: '<button class="pay">',
+    selector: 'button.pay', tagName: 'button', status: 'open', evidence: '<button class="pay">',
   },
 ];
 
@@ -90,14 +90,13 @@ test('a journey that never ran says so instead of printing an empty report', () 
   assert.doesNotMatch(md, /## Score/);
 });
 
-test('every cause is listed with where it is, its source, and what to do', () => {
+test('every cause is listed with where it is, its AQA locator, and what to do', () => {
   const md = journeyReportMarkdown({ journey: journeyWith(), site: SITE, causes: CAUSES });
   assert.match(md, /### Inputs missing labels/);
   assert.match(md, /- Where: Checkout form/);
-  assert.match(md, /- Source: src\/Checkout\.vue:44/);
+  assert.match(md, /- AQA locator: input · #email/);
   assert.match(md, new RegExp(RULE_ACTIONS['label'].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  // An unmapped cause must say so rather than leaving the field blank.
-  assert.match(md, /- Source: unmapped \(vendor, CMS, or outside the indexed repo\)/);
+  assert.match(md, /- AQA locator: button · button\.pay/);
 });
 
 test('coverage table carries every snapshot, splitting fix-required from manual', () => {
