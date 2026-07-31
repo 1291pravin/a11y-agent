@@ -11,6 +11,9 @@ let batchResult = null;  // last CSV batch response, rendered on the onboard scr
 let draft = null;        // in-progress journey in the editor (survives the poll)
 let runnerH = null;      // last GET /api/runner/health payload
 let runnerHAt = 0;       // when we last fetched runner health (throttle)
+let siteReport = null;   // cached site report (M8) - keyed by siteId
+let siteReportAt = 0;    // when siteReport was fetched
+let fixRunLive = null;   // currently-viewed fix-run detail (M9)
 
 // Mirror of server/journey-model.mjs STEP_TYPES; the SPA has no build step so it
 // cannot import, and the two lists must stay in sync.
@@ -261,7 +264,13 @@ function fmtDuration(ms) {
 function route() {
   const hash = location.hash || '#/dashboard';
   const parts = hash.slice(2).split('/');
-  return { view: parts[0] || 'dashboard', id: parts[1] || null, sub: parts[2] || null };
+  return {
+    view: parts[0] || 'dashboard',
+    id: parts[1] || null,
+    sub: parts[2] || null,
+    // Fourth segment: /site/:id/fix-runs/:runId etc.
+    id2: parts[3] || null,
+  };
 }
 
 function render(force) {
@@ -410,6 +419,8 @@ function viewSite(r) {
   const site = S.sites.find((x) => x.id === r.id);
   if (!site) return `<div class="empty">Site not found.</div>`;
   if (r.sub === 'proposed') return viewProposed(site);
+  if (r.sub === 'report') return viewSiteReport(site);
+  if (r.sub === 'fix-runs') return viewFixRun(site, r);
   const causes = S.causes.filter((c) => c.siteId === site.id);
   const urlFlows = site.flows.filter((f) => f.type === 'URL').length;
   const clickFlows = site.flows.filter((f) => f.type === 'Click-state').length;
@@ -573,6 +584,182 @@ function stepLabel(step, idx) {
   if (step.type === 'snapshot') return step.label || 'snapshot';
   if (step.selector) return `${step.type} ${step.selector.slice(0, 24)}`;
   return step.type;
+}
+
+// M8: site-level accessibility report. Aggregates causes across every journey
+// on the site (and the AQA suite when present) into one screen: a headline
+// score, a severity breakdown, the flat cause list, and the "Fix All" CTA
+// that opens a batch dispatch (M9). The report itself is a snapshot of the
+// current state - kicked off from /api/sites/:id/report but computable from
+// public state too. We fetch once per route entry and let the 3s poll refresh
+// the underlying causes so numbers stay live without extra round trips.
+function viewSiteReport(site) {
+  // First entry to the route: fire the fetch. Result renders on the next tick.
+  if (!siteReport || siteReport.site?.id !== site.id || Date.now() - siteReportAt > 15000) {
+    fetchSiteReport(site.id);
+  }
+  const rep = (siteReport && siteReport.site?.id === site.id) ? siteReport : null;
+  const journeys = (S.journeys || []).filter((j) => j.siteId === site.id);
+  const anyRunning = journeys.some((j) => j.runState === 'running');
+  const activeRun = (S.fixRuns || []).find((f) => f.siteId === site.id && (f.state === 'queued' || f.state === 'running'));
+
+  return `
+    <div class="crumb"><a href="#/sites">Sites</a> / <a href="#/site/${site.id}">${esc(hostOf(site.url))}</a> / Report</div>
+    <div class="topline">
+      <h1>Accessibility report <span class="chip acc">${esc(hostOf(site.url))}</span>${anyRunning ? '<span class="chip run">scans in flight</span>' : ''}</h1>
+      <span>
+        <a class="btn ghost small" href="#/site/${site.id}" style="margin-right:6px">Back to site</a>
+        <button class="btn" data-act="fixall" data-id="${site.id}"${!rep || !rep.stats.dispatchable || activeRun ? ' disabled' : ''}>${activeRun ? 'Fix run in flight' : `Fix All${rep ? ` (${rep.stats.dispatchable})` : ''}`}</button>
+      </span>
+    </div>
+    ${rep ? siteReportBody(rep, activeRun) : `<div class="progress" role="status" aria-live="polite"><div class="pl"></div><div class="pr">Building your report…</div></div>`}`;
+}
+
+function siteReportBody(rep, activeRun) {
+  const sev = rep.stats.severity;
+  const jsummary = rep.journeys.map(reportJourneyRow).join('');
+  const causeRows = rep.causes.length ? rep.causes.map(reportCauseRow).join('') : '';
+
+  return `
+    ${activeRun ? `<div class="hint" style="margin:-4px 0 12px">Fix run <a href="#/site/${rep.site.id}/fix-runs/${activeRun.id}">${esc(activeRun.id)}</a> is in flight (${activeRun.dispatched || 0}/${activeRun.plannedCount || 0} dispatched).</div>` : ''}
+    <div class="scorehero">
+      <div class="ring" style="background:conic-gradient(var(${scoreVar(rep.site.score?.score)}) ${rep.site.score?.score || 0}%, var(--line) 0)">
+        <div class="ring-in"><div class="ring-sc">${rep.site.score?.score ?? '—'}</div><div class="ring-g">${esc(rep.site.score?.grade || '')}</div></div>
+      </div>
+      <div class="sx">
+        <h3>${rep.stats.openCauses} open cause(s) across ${rep.stats.journeys} journey(s)</h3>
+        <div class="m">
+          ${sev.critical || 0} critical · ${sev.serious || 0} serious · ${sev.moderate || 0} moderate · ${sev.minor || 0} minor.
+          ${rep.stats.dispatchable} eligible for auto-fix.
+        </div>
+      </div>
+    </div>
+
+    <h2 style="margin:22px 0 10px;font-size:16px">Journeys scanned</h2>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Journey</th><th>Snapshots</th><th>Score</th><th>Causes</th><th>Last run</th></tr></thead>
+      <tbody>${jsummary || '<tr><td colspan="5" class="empty">No journeys yet.</td></tr>'}</tbody>
+    </table></div>
+
+    <h2 style="margin:22px 0 10px;font-size:16px">Root causes ${rep.stats.dispatchable ? `<span class="chip acc" style="margin-left:6px">${rep.stats.dispatchable} eligible</span>` : ''}</h2>
+    ${causeRows ? `<div class="tbl-wrap"><table>
+      <thead><tr><th>Title</th><th>Rule</th><th>Severity</th><th>Instances</th><th>Status</th></tr></thead>
+      <tbody>${causeRows}</tbody>
+    </table></div>`
+    : '<div class="empty">No open causes yet. Approve journeys to run a scan.</div>'}`;
+}
+
+function reportJourneyRow(j) {
+  const state = j.runState === 'running' ? '<span class="chip run">running</span>'
+    : j.lastRun?.ok === false ? '<span class="chip crit">failed</span>'
+    : j.lastRun?.unscored ? '<span class="chip idle">walked (unscored)</span>'
+    : j.lastRun?.score ? scoreChip(j.lastRun.score)
+    : '<span class="chip idle">not run</span>';
+  const causes = j.lastRun?.causes ?? '-';
+  const at = j.lastRun?.at ? fmtAgo(j.lastRun.at) : (j.runState === 'running' ? 'now' : 'never');
+  return `<tr>
+    <td><a href="#/journey/${j.id}">${esc(j.name)}</a></td>
+    <td class="tnum">${j.lastRun?.snapshots ?? '-'}</td>
+    <td>${state}</td>
+    <td class="tnum">${causes}</td>
+    <td>${esc(at)}</td>
+  </tr>`;
+}
+
+function reportCauseRow(c) {
+  const sevClass = c.severity === 'critical' ? 'crit' : c.severity === 'serious' ? 'warn' : c.severity === 'moderate' ? 'acc' : 'idle';
+  const status = c.hasOpenPr ? '<span class="chip run">PR open</span>'
+    : c.hasOpenTask ? '<span class="chip run">task queued</span>'
+    : '<span class="chip idle">eligible</span>';
+  return `<tr>
+    <td>${esc(c.title)}</td>
+    <td><code style="font-size:11px">${esc(c.ruleId || '')}</code></td>
+    <td><span class="chip ${sevClass}">${esc(c.severity)}</span></td>
+    <td class="tnum">${c.instances}</td>
+    <td>${status}</td>
+  </tr>`;
+}
+
+function scoreVar(n) {
+  if (n == null) return '--ink-faint';
+  if (n >= 90) return '--good';
+  if (n >= 70) return '--accent';
+  if (n >= 50) return '--warn';
+  return '--crit';
+}
+
+// Off-cycle fetch (not on the 3s poll): the report shape is heavier than the
+// state blob and only needed when the operator is on the report screen.
+async function fetchSiteReport(siteId) {
+  try {
+    const r = await api('GET', `/api/sites/${siteId}/report`);
+    siteReport = r;
+    siteReportAt = Date.now();
+    render(true);
+  } catch (err) {
+    console.error('report fetch failed:', err.message);
+  }
+}
+
+// M9: batch dispatch command center. The Fix All button on the report opens
+// this screen; parallel agent lanes show queued/working/verifying tasks, a
+// budget bar, a cost ticker, and a kill switch. State comes off the public
+// state poll (fix runs live under S.fixRuns).
+function viewFixRun(site, r) {
+  const runId = r.id2;
+  const run = (S.fixRuns || []).find((x) => x.id === runId);
+  if (!run) return `<div class="crumb"><a href="#/site/${site.id}/report">Report</a> / Fix run</div>
+    <div class="empty">Fix run <code>${esc(runId || '(unknown)')}</code> not found.</div>`;
+
+  const tasks = S.tasks.filter((t) => (run.taskIds || []).includes(t.id));
+  const lanes = {
+    queued: tasks.filter((t) => t.state === 'queued'),
+    working: tasks.filter((t) => t.state === 'working'),
+    verifying: tasks.filter((t) => t.state === 'verifying' || t.state === 'awaiting_merge'),
+    done: tasks.filter((t) => t.state === 'done' || t.state === 'verified' || t.state === 'merged'),
+    failed: tasks.filter((t) => t.state === 'failed'),
+  };
+  const budgetPct = run.budgetUsd ? Math.min(100, Math.round(((run.spentUsd || 0) / run.budgetUsd) * 100)) : 0;
+  const active = run.state === 'queued' || run.state === 'running';
+
+  return `
+    <div class="crumb"><a href="#/site/${site.id}/report">Report</a> / Fix run</div>
+    <div class="topline">
+      <h1>Fix run <code style="font-size:14px;font-weight:600">${esc(run.id)}</code>
+        ${run.state === 'running' ? '<span class="chip run">running</span>'
+          : run.state === 'queued' ? '<span class="chip idle">queued</span>'
+          : run.state === 'complete' ? '<span class="chip good">complete</span>'
+          : run.state === 'cancelled' ? '<span class="chip warn">cancelled</span>'
+          : `<span class="chip crit">${esc(run.state)}</span>`}
+      </h1>
+      <span>
+        <a class="btn ghost small" href="#/site/${site.id}/report" style="margin-right:6px">Report</a>
+        ${active ? `<button class="btn ghost" data-act="cancelfixrun" data-id="${run.id}">Cancel run</button>` : ''}
+      </span>
+    </div>
+    <div class="cards">
+      ${kpi(run.plannedCount || 0, 'Planned')}
+      ${kpi(run.dispatched || 0, 'Dispatched')}
+      ${kpi(lanes.done.length, 'Fixed')}
+      ${kpi(lanes.failed.length, 'Failed')}
+    </div>
+
+    ${run.budgetUsd ? `<div class="hint" style="margin:-4px 0 12px">
+      Budget: <b>$${run.spentUsd?.toFixed(2) || '0.00'}</b> / $${run.budgetUsd.toFixed(2)}
+      · Concurrency: ${run.concurrency || 1}
+      · Started: ${esc(fmtAgo(run.startedAt))}
+      <div style="height:6px;background:var(--surface-2);border-radius:99px;overflow:hidden;margin-top:6px;max-width:420px">
+        <div style="height:100%;width:${budgetPct}%;background:var(--accent);transition:width 200ms"></div>
+      </div>
+    </div>` : ''}
+
+    <div class="kanban-wrap"><div class="kanban" style="grid-template-columns:repeat(5,minmax(180px,1fr))">
+      ${['queued', 'working', 'verifying', 'done', 'failed'].map((k) => `
+        <div class="kcol">
+          <h5>${k}<span>${lanes[k].length}</span></h5>
+          ${lanes[k].map((t) => `<div class="kcard"><b>${esc(t.title || t.id)}</b><span class="m">${esc(t.ruleId || t.state)}</span>${t.prNum ? `<span class="cursor-tag">PR #${esc(String(t.prNum))}</span>` : ''}</div>`).join('')}
+        </div>`).join('')}
+    </div></div>`;
 }
 
 // One-line human summary of a step list, so the review table shows what a
@@ -1515,17 +1702,22 @@ const ACT_BUSY = {
   merged: 'Recording&hellip;',
   runjourney: 'Starting&hellip;',
   deletejourney: 'Deleting&hellip;',
+  acceptproposals: 'Approving&hellip;',
+  fixall: 'Dispatching batch&hellip;',
+  cancelfixrun: 'Cancelling&hellip;',
 };
 const ACT_FAIL = {
   exportjourney: 'Could not export report',
   discover: 'Could not start discovery',
-  acceptproposals: 'Could not accept journeys',
+  acceptproposals: 'Could not approve journeys',
   dispatch: 'Could not dispatch fix task',
   scan: 'Could not start scan',
   merged: 'Could not record merge',
   export: 'Could not export report',
   runjourney: 'Could not start journey run',
   deletejourney: 'Could not delete journey',
+  fixall: 'Could not start Fix All batch',
+  cancelfixrun: 'Could not cancel fix run',
 };
 
 function bindActions() {
@@ -1578,17 +1770,35 @@ function bindActions() {
           toast('ok', 'Report downloading', `a11y-report-${id}.md`);
         }
         if (act === 'discover') {
-          await api('POST', `/api/sites/${id}/discover`, { focus: [] });
+          const site = (S?.sites || []).find((x) => x.id === id);
+          await api('POST', `/api/sites/${id}/discover`, { intent: site?.intent || '' });
           toast('ok', 'Discovering journeys', 'An agent is inspecting the site. Nothing is saved until you review.');
           location.hash = `#/site/${id}/proposed`;
         }
         if (act === 'acceptproposals') {
           const picks = [...document.querySelectorAll('.prop-pick')]
             .filter((c) => c.checked).map((c) => Number(c.dataset.idx));
-          if (!picks.length) { throw new Error('Select at least one journey to accept.'); }
-          const r = await api('POST', `/api/sites/${id}/journeys/accept`, { accept: picks });
-          toast('ok', `${r.created} journey(s) accepted`, r.skipped?.length ? `${r.skipped.length} skipped (duplicate or invalid).` : 'Run them from the Journeys screen.');
-          location.hash = '#/journeys';
+          if (!picks.length) { throw new Error('Select at least one journey to include.'); }
+          // M8: /approve auto-runs every created journey, so the reviewer
+          // moves straight from approval into a scoring pass and lands on
+          // the site report where scans are already in flight.
+          const r = await api('POST', `/api/sites/${id}/journeys/approve`, { accept: picks });
+          toast('ok', `Scanning ${r.created} journey(s)`, r.skipped?.length
+            ? `${r.skipped.length} skipped (duplicate or invalid). Watch progress on the site report.`
+            : 'Watch progress on the site report; the Fix All button unlocks once scans finish.');
+          location.hash = `#/site/${id}/report`;
+        }
+        if (act === 'fixall') {
+          const run = await api('POST', `/api/sites/${id}/fix-runs`, {});
+          toast('ok', 'Fix run started', `Batch ${run.id}: ${run.plannedCount} cause(s), concurrency ${run.concurrency}, budget $${run.budgetUsd.toFixed(2)}.`);
+          location.hash = `#/site/${id}/fix-runs/${run.id}`;
+        }
+        if (act === 'cancelfixrun') {
+          if (!window.confirm('Cancel this fix run? In-flight tasks will keep running until they complete on their own, but no new ones will be dispatched.')) {
+            el.disabled = false; el.removeAttribute('aria-busy'); el.innerHTML = label; return;
+          }
+          await api('POST', `/api/fix-runs/${id}/cancel`);
+          toast('ok', 'Fix run cancelled', 'No new tasks will be dispatched from this batch.');
         }
         if (act === 'deletejourney') {
           if (!window.confirm('Delete this journey? Open causes it found are removed; any with a task or PR are kept.')) {

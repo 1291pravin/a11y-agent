@@ -15,6 +15,7 @@ import { resumePolling } from './orchestrator.mjs';
 import { initScheduler, schedulerEnabled } from './scheduler.mjs';
 import { listenAvailable } from './listen-port.mjs';
 import { screenshotRoot } from './journey-propose.mjs';
+import { resumeFixRuns } from './fix-run.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(__dirname, '..', 'web');
@@ -124,6 +125,8 @@ async function start() {
     }));
   }
   resumePolling();
+  const resumedFixRuns = resumeFixRuns();
+  if (resumedFixRuns) console.log(`  FixRun: ${resumedFixRuns} active batch(es) resumed`);
 }
 
 start();

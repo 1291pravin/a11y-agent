@@ -58,6 +58,7 @@ export async function bootstrapFromAqa() {
     causes,
     tasks: [],
     prs: [],
+    fixRuns: [],
     activity,
   };
 }
@@ -143,6 +144,7 @@ export function demoSeed() {
     ],
     tasks: [],
     prs: [],
+    fixRuns: [],
     activity: [],
   };
 }

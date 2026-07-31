@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { getState, update } from './store.mjs';
 import { buildIndex } from './mapper.mjs';
 import { validateJourney } from './journey-model.mjs';
-import { callRunner, allJourneys, makeJourney } from './journeys.mjs';
+import { callRunner, allJourneys, makeJourney, startJourneyRun } from './journeys.mjs';
 import { chatJson, llmConfigured } from '../integrations/llm.mjs';
 
 // Repo-relative screenshots root the runner writes into. The runner and the
@@ -340,7 +340,13 @@ export function deriveFocusFromIntent(intent) {
 
 // Turn reviewed proposals into real journeys. Names already on the site are
 // skipped rather than duplicated, matching the idempotent create route.
-export function acceptProposals(siteId, indices) {
+//
+// M8: with autoRun:true, every newly-created journey is fired off through the
+// runner so the reviewer moves straight from approval into a scoring run.
+// The runner queue serializes browser launches, so all approved journeys
+// still walk one at a time - autoRun just removes the "click Run on each
+// journey afterwards" step.
+export function acceptProposals(siteId, indices, { autoRun = false } = {}) {
   const site = findSite(siteId);
   if (!site) return { error: 'site not found' };
   const proposals = site.discover?.proposals || [];
@@ -374,9 +380,16 @@ export function acceptProposals(siteId, indices) {
     const target = findSite(siteId, s);
     if (target?.discover) target.discover = { ...target.discover, proposals: [], acceptedAt: Date.now() };
     if (created.length) {
-      s.activity.unshift({ ts: Date.now(), msg: `Accepted ${created.length} discovered journey(s) for ${site.url}` });
+      s.activity.unshift({ ts: Date.now(), msg: `${autoRun ? 'Approved & scanning' : 'Accepted'} ${created.length} discovered journey(s) for ${site.url}` });
     }
   });
+
+  // Fire off runs OUTSIDE the update() block so a failing runner never rolls
+  // back the newly-persisted journeys. startJourneyRun is itself fire-and-
+  // forget, so we can chain them without awaiting.
+  if (autoRun) {
+    for (const j of created) startJourneyRun(j.id);
+  }
 
   return { created, skipped };
 }

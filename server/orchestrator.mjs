@@ -318,6 +318,9 @@ const DEMO_SCRIPT = {
   },
 };
 
+// unref() so a test importing this module can still exit cleanly - in
+// production the HTTP server keeps the event loop alive anyway, so nothing
+// user-facing changes; only the "test process hangs forever" foot-gun goes.
 setInterval(() => {
   const s = getState();
   const pending = s.tasks.filter((t) => t.agent === 'demo' && DEMO_SCRIPT[t.state]);
@@ -327,7 +330,7 @@ setInterval(() => {
       if (t.agent === 'demo' && DEMO_SCRIPT[t.state]) DEMO_SCRIPT[t.state](t, state);
     }
   });
-}, DEMO_STAGE_MS);
+}, DEMO_STAGE_MS).unref?.();
 
 // ── Real AQA scan ───────────────────────────────────────────────────────────
 // Trigger a run, poll until terminal, then re-hydrate the site from the fresh

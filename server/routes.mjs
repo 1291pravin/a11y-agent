@@ -7,6 +7,7 @@ import { slotFor, schedulerEnabled } from './scheduler.mjs';
 import { allJourneys, findJourney, makeJourney, startJourneyRun, runnerHealth } from './journeys.mjs';
 import { validateJourney } from './journey-model.mjs';
 import { startDiscovery, acceptProposals, FOCUS_AREAS } from './journey-propose.mjs';
+import { startFixRun, cancelFixRun, findFixRun, allFixRuns } from './fix-run.mjs';
 import { journeyReportMarkdown, actionFor } from './report.mjs';
 import { scoreCauses, openCauses, formatCauseLocator } from './aqa-sync.mjs';
 import * as aqa from '../integrations/aqa.mjs';
@@ -232,9 +233,36 @@ export async function handle(req, res, url) {
     const site = getState().sites.find((x) => x.id === m[1]);
     if (!site) return json(res, 404, { error: 'site not found' });
     const body = await readBody(req);
-    const result = acceptProposals(site.id, body.accept);
+    const result = acceptProposals(site.id, body.accept, { autoRun: Boolean(body.autoRun) });
     if (result.error) return json(res, 400, { error: result.error });
-    return json(res, 201, { created: result.created.length, skipped: result.skipped, journeys: result.created });
+    return json(res, 201, { created: result.created.length, skipped: result.skipped, journeys: result.created, autoRun: Boolean(body.autoRun) });
+  }
+
+  // M8: same shape as /accept, but always kicks off a scan on every created
+  // journey. This is the "Approve & scan" button on the review screen -
+  // separated as its own route so a client that just wants to persist the
+  // journeys without triggering runs (batch tooling, CLI) can still use
+  // /accept without opting in.
+  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/journeys\/approve$/))) {
+    const site = getState().sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    const body = await readBody(req);
+    const result = acceptProposals(site.id, body.accept, { autoRun: true });
+    if (result.error) return json(res, 400, { error: result.error });
+    return json(res, 201, {
+      created: result.created.length, skipped: result.skipped, journeys: result.created, autoRun: true,
+    });
+  }
+
+  // M8: consolidated site report - aggregates causes across every journey on
+  // the site plus the AQA suite. Feeds the #/site/:id/report UI screen (the
+  // "Fix All" surface); the per-journey markdown report at
+  // /api/journeys/:id/report stays as it is for exports.
+  if (method === 'GET' && (m = path.match(/^\/api\/sites\/([\w-]+)\/report$/))) {
+    const s = getState();
+    const site = s.sites.find((x) => x.id === m[1]);
+    if (!site) return json(res, 404, { error: 'site not found' });
+    return json(res, 200, buildSiteReport(s, site));
   }
 
   if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/scan$/))) {
@@ -263,6 +291,40 @@ export async function handle(req, res, url) {
       'content-length': Buffer.byteLength(body),
     });
     return res.end(body);
+  }
+
+  // M9: batch dispatch. Body may include:
+  //   causeIds:[cause-id],   // explicit set; omit to dispatch every dispatchable cause
+  //   concurrency:number,    // 1-10, defaults to FIXRUN_CONCURRENCY env or 3
+  //   budgetUsd:number,      // dollars; run stops itself before exceeding
+  //   autoMerge:boolean      // reserved for M10 - Local Verifier gates merges
+  if (method === 'POST' && (m = path.match(/^\/api\/sites\/([\w-]+)\/fix-runs$/))) {
+    const body = await readBody(req);
+    const result = startFixRun(m[1], {
+      causeIds: Array.isArray(body.causeIds) ? body.causeIds : undefined,
+      concurrency: body.concurrency,
+      budgetUsd: body.budgetUsd,
+      autoMerge: body.autoMerge,
+    });
+    if (result.error) return json(res, 400, { error: result.error });
+    return json(res, 201, result.run);
+  }
+
+  if (method === 'GET' && (m = path.match(/^\/api\/sites\/([\w-]+)\/fix-runs$/))) {
+    const runs = allFixRuns().filter((r) => r.siteId === m[1]);
+    return json(res, 200, { runs });
+  }
+
+  if (method === 'GET' && (m = path.match(/^\/api\/fix-runs\/([\w-]+)$/))) {
+    const run = findFixRun(m[1]);
+    if (!run) return json(res, 404, { error: 'fix run not found' });
+    return json(res, 200, run);
+  }
+
+  if (method === 'POST' && (m = path.match(/^\/api\/fix-runs\/([\w-]+)\/cancel$/))) {
+    const result = cancelFixRun(m[1]);
+    if (result.error) return json(res, 404, { error: result.error });
+    return json(res, 200, result.run);
   }
 
   if (method === 'POST' && (m = path.match(/^\/api\/causes\/([\w-]+)\/dispatch$/))) {
@@ -389,6 +451,73 @@ function fixReport(site, causes, { auditOnly = true } = {}) {
   return lines.join('\n');
 }
 
+// M8: shape the site report the way the "Fix All" screen needs it - a single
+// payload the UI can render without walking the full public state. Aggregates
+// causes across every journey plus the AQA suite so the reviewer sees the
+// site as a whole, not per-journey. Severity breakdown is precomputed so the
+// UI stays presentational.
+function buildSiteReport(s, site) {
+  const journeys = (s.journeys || []).filter((j) => j.siteId === site.id);
+  const journeyRunning = journeys.filter((j) => j.runState === 'running').length;
+  const journeyReady = journeys.filter((j) => j.lastRun && j.lastRun.ok !== false).length;
+  const journeyFailed = journeys.filter((j) => j.lastRun && j.lastRun.ok === false).length;
+
+  const causesForSite = s.causes.filter((c) => c.siteId === site.id);
+  const openList = openCauses(causesForSite);
+  // Score across the whole site: units = one per journey snapshot (visible
+  // surface). Matches how the per-journey score normalizes.
+  const snapshotUnits = journeys.reduce((acc, j) => acc + (j.lastRun?.snapshots?.length || 0), 0);
+  const score = scoreCauses(openList, { units: Math.max(1, snapshotUnits || journeys.length || 1) });
+
+  const bySev = { critical: 0, serious: 0, moderate: 0, minor: 0 };
+  for (const c of openList) bySev[c.severity] = (bySev[c.severity] || 0) + (c.instances || 1);
+
+  const causes = openList.map((c) => ({
+    id: c.id,
+    title: c.title,
+    ruleId: c.ruleId,
+    rule: c.rule,
+    severity: c.severity,
+    instances: c.instances,
+    pages: c.pages || [],
+    journeyId: c.journeyId || null,
+    status: c.status,
+    // A cause the fix batch already has a task or PR against is not eligible
+    // for re-dispatch. The UI uses this to gray out its row and hide the
+    // Include checkbox.
+    hasOpenTask: s.tasks.some((t) => t.causeId === c.id && (t.state === 'queued' || t.state === 'running')),
+    hasOpenPr: s.prs.some((p) => p.causeId === c.id && p.state === 'open'),
+  }));
+
+  return {
+    site: {
+      id: site.id, url: site.url, mode: site.mode,
+      score, framework: site.framework, repo: site.repo,
+    },
+    journeys: journeys.map((j) => ({
+      id: j.id, name: j.name,
+      runState: j.runState,
+      lastRun: j.lastRun ? {
+        at: j.lastRun.at, ok: j.lastRun.ok, unscored: j.lastRun.unscored,
+        error: j.lastRun.error, score: j.lastRun.score, causes: j.lastRun.causes,
+        snapshots: j.lastRun.snapshots?.length || 0,
+      } : null,
+    })),
+    stats: {
+      journeys: journeys.length,
+      journeyRunning, journeyReady, journeyFailed,
+      openCauses: openList.length,
+      severity: bySev,
+      // A batch dispatch cost is capped separately (see fix-runs) but this is
+      // the ceiling to display next to the "Fix All" CTA so the operator sees
+      // roughly what they are about to authorize.
+      dispatchable: causes.filter((c) => !c.hasOpenTask && !c.hasOpenPr).length,
+    },
+    causes,
+    lastReportAt: Date.now(),
+  };
+}
+
 function publicState() {
   const s = getState();
   return {
@@ -407,6 +536,7 @@ function publicState() {
     causes: s.causes,
     tasks: s.tasks,
     prs: s.prs,
+    fixRuns: s.fixRuns || [],
     activity: s.activity.slice(0, 30),
   };
 }
